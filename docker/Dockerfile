@@ -4,7 +4,7 @@
 # The builder runs on the native build platform and cross-compiles for the
 # target: clacks is pure Go, so this is far faster and more reliable than
 # emulating a foreign architecture under QEMU.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 ARG VERSION
 ARG COMMIT
