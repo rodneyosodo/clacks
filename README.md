@@ -12,7 +12,11 @@ opencode keeps sessions in a local SQLite database, so they never leave the mach
 
 ## Install
 
-Download a release archive for your platform, or build from source — it is a single static binary with no CGO and no runtime dependencies.
+clacks is a single static binary with no CGO and no runtime dependencies. Pick whichever of the three routes suits you.
+
+### From a GitHub release
+
+Download the archive for your platform, check it against the published checksums, and put the binary on your `PATH`.
 
 | Platform              | Archive                      |
 | --------------------- | ---------------------------- |
@@ -23,7 +27,46 @@ Download a release archive for your platform, or build from source — it is a s
 | Windows (x86-64)      | `clacks-windows-amd64.zip`   |
 
 ```sh
-go build -o bin/clacks ./cmd/clacks   # or: make build
+BASE=https://github.com/rodneyosodo/clacks/releases/latest/download
+
+curl -fsSLO "$BASE/clacks-linux-amd64.tar.gz"   # or your platform's archive
+curl -fsSLO "$BASE/checksums.txt"
+
+# --ignore-missing lets one checksums.txt verify whichever archive you grabbed.
+sha256sum --ignore-missing -c checksums.txt
+
+tar -xzf clacks-linux-amd64.tar.gz
+sudo install -m755 clacks-linux-amd64 /usr/local/bin/clacks
+```
+
+To pin a specific release, swap `latest` for its tag, e.g. `.../releases/download/v0.1.0/checksums.txt`.
+
+On Windows, download the `.zip`, then in PowerShell:
+
+```powershell
+Invoke-WebRequest https://github.com/rodneyosodo/clacks/releases/latest/download/clacks-windows-amd64.zip -OutFile clacks.zip
+certutil -hashfile clacks.zip SHA256
+Expand-Archive clacks.zip
+Move-Item -Force clacks-windows-amd64.exe $env:LOCALAPPDATA\Programs\clacks\clacks.exe
+```
+
+### With `go install`
+
+Needs Go 1.27 or newer. This builds from the default branch, so use an explicit version tag to pin a release:
+
+```sh
+go install github.com/rodneyosodo/clacks/cmd/clacks@latest        # default branch
+go install github.com/rodneyosodo/clacks/cmd/clacks@v0.1.0       # a specific release
+```
+
+`go install` drops the binary in `$(go env GOPATH)/bin`; make sure that is on your `PATH`.
+
+### From source
+
+```sh
+git clone https://github.com/rodneyosodo/clacks
+cd clacks
+make build          # or: go build -o bin/clacks ./cmd/clacks
 ```
 
 Paths follow the XDG layout everywhere (`$XDG_DATA_HOME/clacks`, `$XDG_CONFIG_HOME/clacks`). On Windows, set `CLACKS_HOME` and `CLACKS_CONFIG_HOME` to override the defaults.
@@ -69,7 +112,7 @@ clacks opencode sessions
 
 Sessions should now appear in opencode on machine B. If opencode is already running there, restart it. Repeat steps 3 and 4 for a third machine, and as many as you like.
 
-The server holds one stream per machine, so sync is a mesh rather than a set of pairs: a session written on any machine reaches every other machine as records propagate. Propagation is store-and-forward, so a change made on A is not visible on C until C has synced once *and* A has synced again — expect roughly one sync round per hop, and run `clacks sync` on each machine when you want everything caught up.
+The server holds one stream per machine, so sync is a mesh rather than a set of pairs: a session written on any machine reaches every other machine as records propagate. Propagation is store-and-forward, so a change made on A is not visible on C until C has synced once _and_ A has synced again — expect roughly one sync round per hop, and run `clacks sync` on each machine when you want everything caught up.
 
 ### 5. Keep it in sync
 
