@@ -7,7 +7,7 @@ opencode keeps sessions in a local SQLite database, so they never leave the mach
 ## Requirements
 
 - **opencode 1.18.x.** clacks reads the v1 schema (`session`, `message`, `part`, `todo`). opencode 2.x renamed these to `session_v2` and `session_message`, so **every machine must run the same major version** — sessions synced into a v2 opencode simply won't appear.
-- A Go toolchain (1.26+) to build, or a release binary.
+- A Go toolchain (1.27+) to build, or a release binary.
 - A machine to host the server. It can be a VPS, a NAS, or a laptop.
 
 ## Install
