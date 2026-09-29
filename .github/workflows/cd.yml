@@ -20,7 +20,6 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE: ghcr.io/rodneyosodo/clacks
 
 jobs:
   docker:

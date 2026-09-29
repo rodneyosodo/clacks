@@ -5,7 +5,6 @@ BUILD_DIR ?= bin
 DIST_DIR ?= dist
 
 SHELL := /bin/bash
-.SHELLFLAGS := -o pipefail -c
 
 GOOS ?= $(shell go env GOOS)
 GOARCH ?= $(shell go env GOARCH)
@@ -22,9 +21,8 @@ DOCKER_IMAGE ?= $(DOCKER_IMAGE_NAME_PREFIX)/$(BINARY)
 DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
 TAGS ?= $(DOCKER_IMAGE):latest
 comma := ,
-empty :=
-space := $(empty) $(empty)
-TAG_ARGS = $(foreach t,$(subst $(comma), ,$(subst $(space), ,$(TAGS))),--tag $(t))
+# --tag takes one value per flag, so a comma-separated list expands to repeated flags.
+TAG_ARGS = $(foreach t,$(subst $(comma), ,$(TAGS)),--tag $(t))
 
 LDFLAGS := -s -w \
 	-X 'main.version=$(VERSION)' \
@@ -47,10 +45,6 @@ print-meta:
 	@echo "time=$(TIME)"
 	@echo "image=$(DOCKER_IMAGE)"
 
-# Build and archive one platform, ready to attach to a release:
-#   make package GOOS=darwin GOARCH=arm64
-# Windows gets a .zip, everything else a .tar.gz, and both carry LICENSE and
-# README.md alongside the binary.
 package:
 	@set -euo pipefail; \
 	ext=""; \
@@ -77,7 +71,7 @@ checksums:
 	@set -euo pipefail; \
 	mkdir -p "$(DIST_DIR)"; \
 	cd "$(DIST_DIR)"; \
-	{ ls -1 *.tar.gz *.zip 2>/dev/null || true; } | sed '/^$$/d' | sort \
+	{ ls -1 *.tar.gz *.zip 2>/dev/null || true; } | sort \
 		| xargs -r sha256sum > checksums.txt; \
 	cat checksums.txt
 
