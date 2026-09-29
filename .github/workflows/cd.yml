@@ -74,8 +74,6 @@ jobs:
             TIME="${META_TIME}" \
             TAGS="${META_IMAGE}:latest,${META_IMAGE}:${META_VERSION},${second}" \
             DOCKER_PUSH=true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
   build-binaries:
     name: clacks-${{ matrix.goos }}-${{ matrix.goarch }}
