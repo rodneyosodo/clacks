@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
+	github.com/goccy/go-json v0.10.5
 	github.com/google/uuid v1.6.0
 	github.com/klauspost/compress v1.20.0
 	github.com/spf13/cobra v1.10.2
