@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -15,8 +16,35 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Tables synced from opencode.db, in foreign-key order.
-var tablesInOrder = []string{"project", "session", "message", "part", "todo"}
+// schema describes the opencode table layout of one major version. v2 renamed
+// `session` to `session_v2`, folded `part` rows into `session_message.data`,
+// and dropped `todo`, so the table set differs per version even though the
+// record stream is identical.
+type schema struct {
+	major   int
+	tables  []string // synced tables, parents before children
+	session string
+	message string
+	part    string
+	todo    string
+}
+
+var (
+	schemaV1 = &schema{
+		major:   1,
+		tables:  []string{"project", "session", "message", "part", "todo"},
+		session: "session",
+		message: "message",
+		part:    "part",
+		todo:    "todo",
+	}
+	schemaV2 = &schema{
+		major:   2,
+		tables:  []string{"project", "session_v2", "session_message"},
+		session: "session_v2",
+		message: "session_message",
+	}
+)
 
 // Source adapts opencode's SQLite storage to the sync record stream.
 type Source struct {
@@ -165,38 +193,44 @@ func toInt64(v any) int64 {
 	}
 }
 
-// checkSchema verifies the file is an initialised opencode database, not a
-// fresh/empty SQLite file. We deliberately do NOT create the tables ourselves:
-// opencode owns its schema via drizzle migrations, and pre-creating a subset
-// would collide with them.
-func checkSchema(ctx context.Context, db *sql.DB, path string) error {
+// resolveSchema identifies the opencode major version from its table names and
+// verifies every table clacks needs is present. We deliberately do NOT create
+// the tables ourselves: opencode owns its schema via drizzle migrations, and
+// pre-creating a subset would collide with them.
+func resolveSchema(ctx context.Context, db *sql.DB, path string) (*schema, error) {
 	rows, err := db.QueryContext(ctx, `SELECT name FROM sqlite_master WHERE type='table'`)
 	if err != nil {
-		return fmt.Errorf("opencode database at %s: %w", path, err)
+		return nil, fmt.Errorf("opencode database at %s: %w", path, err)
 	}
 	defer rows.Close()
 	have := map[string]bool{}
 	for rows.Next() {
 		var n string
 		if err := rows.Scan(&n); err != nil {
-			return fmt.Errorf("opencode database at %s: %w", path, err)
+			return nil, fmt.Errorf("opencode database at %s: %w", path, err)
 		}
 		have[n] = true
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("opencode database at %s: %w", path, err)
+		return nil, fmt.Errorf("opencode database at %s: %w", path, err)
 	}
-	for _, t := range tablesInOrder {
-		if !have[t] {
-			if have["session_v2"] {
-				return fmt.Errorf("opencode database at %s uses the v2 schema (session_v2) but clacks syncs the v1 schema (session/message/part/todo): run the same opencode major version on every machine (e.g. install opencode 1.18.x here to match), then sync again", path)
-			}
 
-			return fmt.Errorf("opencode database at %s is not initialised (missing table %q)%s: launch opencode once so it creates its tables, then run clacks sync again", path, t, siblingHint(path))
+	// Checked in this order because a v1 database already carries
+	// `session_message`, so its presence means nothing on its own.
+	sc := schemaV1
+	if have["session_v2"] {
+		sc = schemaV2
+	}
+	for _, t := range sc.tables {
+		if !have[t] {
+			return nil, fmt.Errorf("opencode database at %s is not initialised (missing table %q, opencode %d schema)%s: launch opencode once so it creates its tables, then run clacks sync again", path, t, sc.major, siblingHint(path))
 		}
 	}
+	if !have["session"] && !have["session_v2"] {
+		return nil, fmt.Errorf("opencode database at %s is not initialised (no session table, expected %s or session_v2)%s: launch opencode once so it creates its tables, then run clacks sync again", path, sc.session, siblingHint(path))
+	}
 
-	return nil
+	return sc, nil
 }
 
 // queryRows runs q and returns rows as column maps.
@@ -230,6 +264,31 @@ func queryRows(ctx context.Context, db *sql.DB, q string, args ...any) ([]map[st
 	return out, rows.Err()
 }
 
+// scanChildren emits the rows of every child table this schema version has for
+// one session. v2 folds parts into the message row and has no todo, so the
+// empty table names in schemaV2 are skipped.
+func scanChildren(ctx context.Context, db *sql.DB, sc *schema, emit func(string, map[string]any), sid string) error {
+	children := []struct{ table, order string }{
+		{sc.message, "time_created ASC, id ASC"},
+		{sc.part, "time_created ASC, id ASC"},
+		{sc.todo, "position ASC"},
+	}
+	for _, c := range children {
+		if c.table == "" {
+			continue
+		}
+		rows, err := queryRows(ctx, db, `SELECT * FROM `+c.table+` WHERE session_id=? ORDER BY `+c.order, sid)
+		if err != nil {
+			return err
+		}
+		for _, r := range rows {
+			emit(c.table, r)
+		}
+	}
+
+	return nil
+}
+
 // Scan implements source.Source: local opencode.db -> changes.
 func (s *Source) Scan(ctx context.Context, versions map[string]int64) ([]record.Change, error) {
 	if err := s.checkDB(); err != nil {
@@ -240,7 +299,8 @@ func (s *Source) Scan(ctx context.Context, versions map[string]int64) ([]record.
 		return nil, err
 	}
 	defer db.Close()
-	if err := checkSchema(ctx, db, s.DBPath); err != nil {
+	sc, err := resolveSchema(ctx, db, s.DBPath)
+	if err != nil {
 		return nil, err
 	}
 
@@ -249,12 +309,12 @@ func (s *Source) Scan(ctx context.Context, versions map[string]int64) ([]record.
 
 	// Dirty sessions drive the scan (uses existing time_updated ordering;
 	// no new indexes on opencode's schema).
-	sessRows, err := queryRows(ctx, db, `SELECT id, project_id, time_updated FROM session WHERE time_updated > ? ORDER BY time_updated ASC`, since)
+	sessRows, err := queryRows(ctx, db, `SELECT id, project_id, time_updated FROM `+sc.session+` WHERE time_updated > ? ORDER BY time_updated ASC`, since)
 	if err != nil {
 		return nil, err
 	}
 	// Session id set for delete detection.
-	allSess, err := queryRows(ctx, db, `SELECT id FROM session`)
+	allSess, err := queryRows(ctx, db, `SELECT id FROM `+sc.session)
 	if err != nil {
 		return nil, err
 	}
@@ -290,9 +350,9 @@ func (s *Source) Scan(ctx context.Context, versions map[string]int64) ([]record.
 		if sid == "" {
 			continue
 		}
-		knownSess, sessKnown := versions[record.VersionKey("session", sid)]
+		knownSess, sessKnown := versions[record.VersionKey(sc.session, sid)]
 		sessTU := toInt64(sr["time_updated"])
-		full, err := queryRows(ctx, db, `SELECT * FROM session WHERE id=?`, sid)
+		full, err := queryRows(ctx, db, `SELECT * FROM `+sc.session+` WHERE id=?`, sid)
 		if err != nil || len(full) == 0 {
 			continue
 		}
@@ -313,27 +373,9 @@ func (s *Source) Scan(ctx context.Context, versions map[string]int64) ([]record.
 		if sessKnown && sessTU <= knownSess {
 			continue // session and (by invariant) children unchanged
 		}
-		emitIfNew("session", full[0])
-		msgs, err := queryRows(ctx, db, `SELECT * FROM message WHERE session_id=? ORDER BY time_created ASC, id ASC`, sid)
-		if err != nil {
+		emitIfNew(sc.session, full[0])
+		if err := scanChildren(ctx, db, sc, emitIfNew, sid); err != nil {
 			return nil, err
-		}
-		for _, m := range msgs {
-			emitIfNew("message", m)
-		}
-		parts, err := queryRows(ctx, db, `SELECT * FROM part WHERE session_id=? ORDER BY time_created ASC, id ASC`, sid)
-		if err != nil {
-			return nil, err
-		}
-		for _, p := range parts {
-			emitIfNew("part", p)
-		}
-		todos, err := queryRows(ctx, db, `SELECT * FROM todo WHERE session_id=? ORDER BY position ASC`, sid)
-		if err != nil {
-			return nil, err
-		}
-		for _, t := range todos {
-			emitIfNew("todo", t)
 		}
 	}
 
@@ -341,17 +383,17 @@ func (s *Source) Scan(ctx context.Context, versions map[string]int64) ([]record.
 	if s.PropagateDeletes {
 		for key := range versions {
 			parts := strings.SplitN(key, "\x00", 2)
-			if len(parts) != 2 || parts[0] != "session" {
+			if len(parts) != 2 || parts[0] != sc.session {
 				continue
 			}
 			if !liveSessions[parts[1]] {
-				out = append(out, record.Change{Table: "session", PK: parts[1], Tombstone: true, Version: s.Version})
+				out = append(out, record.Change{Table: sc.session, PK: parts[1], Tombstone: true, Version: s.Version})
 			}
 		}
 	}
 
 	sort.Slice(out, func(i, j int) bool {
-		oi, oj := tableOrder(out[i].Table), tableOrder(out[j].Table)
+		oi, oj := tableOrder(sc, out[i].Table), tableOrder(sc, out[j].Table)
 		if oi != oj {
 			return oi < oj
 		}
@@ -365,14 +407,14 @@ func (s *Source) Scan(ctx context.Context, versions map[string]int64) ([]record.
 	return out, nil
 }
 
-func tableOrder(t string) int {
-	for i, n := range tablesInOrder {
+func tableOrder(sc *schema, t string) int {
+	for i, n := range sc.tables {
 		if n == t {
 			return i
 		}
 	}
 
-	return len(tablesInOrder)
+	return len(sc.tables)
 }
 
 // columnInfo describes one local table column.
@@ -448,12 +490,13 @@ func (s *Source) Apply(ctx context.Context, changes []record.Change) error {
 		return err
 	}
 	defer db.Close()
-	if err := checkSchema(ctx, db, s.DBPath); err != nil {
+	sc, err := resolveSchema(ctx, db, s.DBPath)
+	if err != nil {
 		return err
 	}
 
 	infos := map[string]map[string]columnInfo{}
-	for _, t := range tablesInOrder {
+	for _, t := range sc.tables {
 		info, err := tableInfo(ctx, db, t)
 		if err != nil {
 			return err
@@ -469,14 +512,14 @@ func (s *Source) Apply(ctx context.Context, changes []record.Change) error {
 	sort.SliceStable(ordered, func(i, j int) bool {
 		var ti, tj int
 		if ordered[i].Tombstone {
-			ti = len(tablesInOrder) + 1
+			ti = len(sc.tables) + 1
 		} else {
-			ti = tableOrder(ordered[i].Table)
+			ti = tableOrder(sc, ordered[i].Table)
 		}
 		if ordered[j].Tombstone {
-			tj = len(tablesInOrder) + 1
+			tj = len(sc.tables) + 1
 		} else {
-			tj = tableOrder(ordered[j].Table)
+			tj = tableOrder(sc, ordered[j].Table)
 		}
 
 		return ti < tj
@@ -488,6 +531,8 @@ func (s *Source) Apply(ctx context.Context, changes []record.Change) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	skipped := map[string]bool{}
+
 	for _, ch := range ordered {
 		select {
 		case <-ctx.Done():
@@ -495,7 +540,7 @@ func (s *Source) Apply(ctx context.Context, changes []record.Change) error {
 		default:
 		}
 		if ch.Tombstone {
-			if err := s.applyTombstone(ctx, tx, ch); err != nil {
+			if err := s.applyTombstone(ctx, tx, sc, ch); err != nil {
 				return err
 			}
 			s.markApplied(ctx, ch)
@@ -504,7 +549,12 @@ func (s *Source) Apply(ctx context.Context, changes []record.Change) error {
 		}
 		info, ok := infos[ch.Table]
 		if !ok {
-			s.Warns = append(s.Warns, "unknown table "+ch.Table)
+			// Expected when machines run different opencode majors: records for
+			// a table this database does not have are reported once, not per row.
+			if !skipped[ch.Table] {
+				skipped[ch.Table] = true
+				s.Warns = append(s.Warns, fmt.Sprintf("skipped table %q: not part of the local opencode %d schema (this machine runs a different opencode major than whoever uploaded it)", ch.Table, sc.major))
+			}
 
 			continue
 		}
@@ -529,7 +579,7 @@ func (s *Source) Apply(ctx context.Context, changes []record.Change) error {
 		if skip {
 			continue
 		}
-		s.rewriteRowPaths(ctx, tx, ch.Table, cols)
+		s.rewriteRowPaths(ctx, tx, sc, ch.Table, cols)
 		if err := upsert(ctx, tx, ch.Table, ch.PK, ch.TimeUpdated, cols, info); err != nil {
 			return fmt.Errorf("upsert %s %s: %w", ch.Table, ch.PK, err)
 		}
@@ -680,10 +730,11 @@ func (s *Source) ListSessions(ctx context.Context, versions map[string]int64) ([
 		return nil, err
 	}
 	defer db.Close()
-	if err := checkSchema(ctx, db, s.DBPath); err != nil {
+	sc, err := resolveSchema(ctx, db, s.DBPath)
+	if err != nil {
 		return nil, err
 	}
-	rows, err := queryRows(ctx, db, `SELECT id, project_id, title, time_updated FROM session ORDER BY time_updated DESC`)
+	rows, err := queryRows(ctx, db, `SELECT id, project_id, title, time_updated FROM `+sc.session+` ORDER BY time_updated DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -692,7 +743,7 @@ func (s *Source) ListSessions(ctx context.Context, versions map[string]int64) ([
 		id, _ := r["id"].(string)
 		tu := toInt64(r["time_updated"])
 		synced := false
-		if known, ok := versions[record.VersionKey("session", id)]; ok && tu <= known {
+		if known, ok := versions[record.VersionKey(sc.session, id)]; ok && tu <= known {
 			synced = true
 		}
 		title, _ := r["title"].(string)
@@ -728,42 +779,34 @@ func (s *Source) markApplied(ctx context.Context, ch record.Change) {
 	}
 }
 
-func (s *Source) applyTombstone(ctx context.Context, tx *sql.Tx, ch record.Change) error {
-	switch ch.Table {
-	case "session":
-		_, err := tx.ExecContext(ctx, `DELETE FROM session WHERE id=?`, ch.PK)
+func (s *Source) applyTombstone(ctx context.Context, tx *sql.Tx, sc *schema, ch record.Change) error {
+	del := func(q string, args ...any) error {
+		_, err := tx.ExecContext(ctx, q, args...)
 
 		return err
-	case "project":
-		_, err := tx.ExecContext(ctx, `DELETE FROM project WHERE id=?`, ch.PK)
-
-		return err
-	case "message":
-		_, err := tx.ExecContext(ctx, `DELETE FROM message WHERE id=?`, ch.PK)
-
-		return err
-	case "part":
-		_, err := tx.ExecContext(ctx, `DELETE FROM part WHERE id=?`, ch.PK)
-
-		return err
-	case "todo":
+	}
+	// The v1 todo table is the one with a composite key.
+	if ch.Table == sc.todo {
 		sid, pos, ok := strings.Cut(ch.PK, ":")
 		if !ok {
 			return nil
 		}
-		_, err := tx.ExecContext(ctx, `DELETE FROM todo WHERE session_id=? AND position=?`, sid, pos)
 
-		return err
-	default:
+		return del(`DELETE FROM `+sc.todo+` WHERE session_id=? AND position=?`, sid, pos)
+	}
+	// Tables this database does not have are a cross-version record, not an error.
+	if !slices.Contains(sc.tables, ch.Table) {
 		return nil
 	}
+
+	return del(`DELETE FROM `+ch.Table+` WHERE id=?`, ch.PK)
 }
 
 // rewriteRowPaths maps session.directory / project.worktree to local paths.
 // A project that already exists locally keeps its local worktree.
-func (s *Source) rewriteRowPaths(ctx context.Context, tx *sql.Tx, table string, cols map[string]any) {
+func (s *Source) rewriteRowPaths(ctx context.Context, tx *sql.Tx, sc *schema, table string, cols map[string]any) {
 	switch table {
-	case "session":
+	case sc.session:
 		if d, ok := cols["directory"].(string); ok && d != "" {
 			cols["directory"] = s.RewritePath(d)
 		}

@@ -6,7 +6,7 @@ opencode keeps sessions in a local SQLite database, so they never leave the mach
 
 ## Requirements
 
-- **opencode 1.18.x.** clacks reads the v1 schema (`session`, `message`, `part`, `todo`). opencode 2.x renamed these to `session_v2` and `session_message`, so **every machine must run the same major version** — sessions synced into a v2 opencode simply won't appear.
+- **opencode 1.18.x or 2.x.** clacks detects which schema your opencode uses and syncs the right tables. Sessions do not move between the two, so **machines you sync together must run the same major version** — a 1.x machine and a 2.x machine will sync cleanly but each keeps only its own half, since the underlying tables differ.
 - A Go toolchain (1.27+) to build, or a release binary.
 - A machine to host the server. It can be a VPS, a NAS, or a laptop.
 
@@ -67,7 +67,9 @@ clacks sync
 clacks opencode sessions
 ```
 
-Sessions should now appear in opencode on machine B. If opencode is already running there, restart it.
+Sessions should now appear in opencode on machine B. If opencode is already running there, restart it. Repeat steps 3 and 4 for a third machine, and as many as you like.
+
+The server holds one stream per machine, so sync is a mesh rather than a set of pairs: a session written on any machine reaches every other machine as records propagate. Propagation is store-and-forward, so a change made on A is not visible on C until C has synced once *and* A has synced again — expect roughly one sync round per hop, and run `clacks sync` on each machine when you want everything caught up.
 
 ### 5. Keep it in sync
 
@@ -146,5 +148,5 @@ Compose runs prebuilt images, so build or pull one first. The client is pinned t
 
 ```sh
 make check   # fmt, vet, lint, test
-go test ./... # unit + end-to-end (in-process server, two machines)
+go test ./... # unit + end-to-end (in-process server, two and three machines, v1 and v2 schemas)
 ```
