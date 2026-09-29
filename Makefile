@@ -20,6 +20,11 @@ TIME ?= $(shell date +'%Y-%m-%dT%H:%M:%SZ')
 DOCKER_IMAGE_NAME_PREFIX ?= ghcr.io/rodneyosodo
 DOCKER_IMAGE ?= $(DOCKER_IMAGE_NAME_PREFIX)/$(BINARY)
 DOCKER_PLATFORMS ?= linux/amd64,linux/arm64
+TAGS ?=
+comma := ,
+empty :=
+space := $(empty) $(empty)
+TAG_ARGS = $(foreach t,$(subst $(comma), ,$(subst $(space), ,$(TAGS))),--tag $(t))
 
 LDFLAGS := -s -w \
 	-X 'main.version=$(VERSION)' \
@@ -127,7 +132,7 @@ docker-buildx:
 		--build-arg COMMIT=$(COMMIT) \
 		--build-arg COMMIT_TIME=$(COMMIT_TIME) \
 		--build-arg TIME=$(TIME) \
-		$(if $(TAGS),--tag $(TAGS),) \
+		$(TAG_ARGS) \
 		$(if $(filter true,$(DOCKER_PUSH)),--push,) \
 		--cache-from type=gha \
 		--cache-to type=gha,mode=max \
