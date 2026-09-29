@@ -12,9 +12,21 @@ opencode keeps sessions in a local SQLite database, so they never leave the mach
 
 ## Install
 
+Download a release archive for your platform, or build from source — it is a single static binary with no CGO and no runtime dependencies.
+
+| Platform              | Archive                      |
+| --------------------- | ---------------------------- |
+| macOS (Apple silicon) | `clacks-darwin-arm64.tar.gz` |
+| macOS (Intel)         | `clacks-darwin-amd64.tar.gz` |
+| Linux (x86-64)        | `clacks-linux-amd64.tar.gz`  |
+| Linux (ARM64)         | `clacks-linux-arm64.tar.gz`  |
+| Windows (x86-64)      | `clacks-windows-amd64.zip`   |
+
 ```sh
 go build -o bin/clacks ./cmd/clacks   # or: make build
 ```
+
+Paths follow the XDG layout everywhere (`$XDG_DATA_HOME/clacks`, `$XDG_CONFIG_HOME/clacks`). On Windows, set `CLACKS_HOME` and `CLACKS_CONFIG_HOME` to override the defaults.
 
 ## Quick start
 

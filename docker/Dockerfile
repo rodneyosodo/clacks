@@ -1,12 +1,18 @@
 # Build clacks from source in a builder stage, then ship only the static
 # binary. CGO is off, so the result runs on any Linux host and needs no libc.
-FROM golang:1.26-alpine AS builder
+#
+# The builder runs on the native build platform and cross-compiles for the
+# target: clacks is pure Go, so this is far faster and more reliable than
+# emulating a foreign architecture under QEMU.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 
 ARG VERSION
 ARG COMMIT
 ARG COMMIT_TIME
 ARG TIME
 ARG CGO_ENABLED=0
+ARG TARGETOS
+ARG TARGETARCH
 
 WORKDIR /src
 
@@ -16,7 +22,7 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=${CGO_ENABLED} go build \
+RUN CGO_ENABLED=${CGO_ENABLED} GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags "-s -w \
     -X 'main.version=${VERSION}' \
     -X 'main.commit=${COMMIT}' \

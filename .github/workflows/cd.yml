@@ -1,0 +1,192 @@
+name: Continuous Delivery
+
+on:
+  push:
+    branches:
+      - main
+
+    tags:
+      - "v*"
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/rodneyosodo/clacks
+
+jobs:
+  docker:
+    name: Publish image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Compute build metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          make -s print-meta >> $GITHUB_OUTPUT
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        env:
+          META_VERSION: ${{ steps.meta.outputs.version }}
+          META_COMMIT: ${{ steps.meta.outputs.commit }}
+          META_IMAGE: ${{ steps.meta.outputs.image }}
+        run: |
+          set -euo pipefail
+          # Branch builds get the commit sha, tag builds the version.
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            second="${META_IMAGE}:${GITHUB_REF_NAME}"
+          else
+            second="${META_IMAGE}:${META_COMMIT}"
+          fi
+          make docker-buildx \
+            DOCKER_IMAGE="${META_IMAGE}" \
+            VERSION="${META_VERSION}" \
+            COMMIT="${META_COMMIT}" \
+            TAGS="${META_IMAGE}:latest,${META_IMAGE}:${META_VERSION},${second}" \
+            DOCKER_PUSH=true
+            COMMIT_TIME=${{ steps.meta.outputs.commit }}
+            TIME=${{ steps.meta.outputs.time }}
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-binaries:
+    name: clacks-${{ matrix.goos }}-${{ matrix.goarch }}
+    needs: [docker]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 1.26.x
+          cache-dependency-path: go.sum
+
+      - name: Build and package
+        run: |
+          set -euo pipefail
+          make package \
+            GOOS="${{ matrix.goos }}" \
+            GOARCH="${{ matrix.goarch }}" \
+            VERSION="$GITHUB_REF_NAME" \
+            CGO_ENABLED=0
+          ls -l dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: clacks-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+          retention-days: 7
+
+  release:
+    name: GitHub release
+    needs: [build-binaries]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: make checksums
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/**
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            Download the archive for your platform and put the binary on your `PATH`:
+
+            | Platform              | File                         |
+            | --------------------- | ---------------------------- |
+            | macOS (Apple silicon) | `clacks-darwin-arm64.tar.gz` |
+            | macOS (Intel)         | `clacks-darwin-amd64.tar.gz` |
+            | Linux (x86-64)        | `clacks-linux-amd64.tar.gz`  |
+            | Linux (ARM64)         | `clacks-linux-arm64.tar.gz`  |
+            | Windows (x86-64)      | `clacks-windows-amd64.zip`   |
+
+            ```sh
+            tar -xzf clacks-linux-amd64.tar.gz
+            sudo mv clacks-linux-amd64 /usr/local/bin/clacks
+            ```
+
+            Verify the download against the published checksums:
+
+            ```sh
+            sha256sum --ignore-missing -c checksums.txt
+            ```
+
+            On Windows, use the bundled file and check it with:
+
+            ```sh
+            certutil -hashfile clacks-windows-amd64.zip SHA256
+            ```
+
+            Or build from source — it is a single static binary with no CGO and no runtime dependencies:
+
+            ```sh
+            go build -o bin/clacks ./cmd/clacks
+            ```
+
+            ## Docker
+
+            The image is published for linux/amd64 and linux/arm64:
+
+            ```sh
+            docker pull ghcr.io/rodneyosodo/clacks:${{ github.ref_name }}
+            docker pull ghcr.io/rodneyosodo/clacks:latest
+            ```
+
+            ## Requirements
+
+            clacks syncs opencode **1.18.x**. opencode 2.x renamed its session tables, so a v2 opencode cannot read records written against v1. Every machine must run the same major version.
+
+            Paths follow the XDG layout on every platform (`$XDG_DATA_HOME/clacks`, `$XDG_CONFIG_HOME/clacks`). On Windows, set `CLACKS_HOME` and `CLACKS_CONFIG_HOME` to override the defaults.

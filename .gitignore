@@ -31,6 +31,7 @@ go.work.sum
 # .idea/
 # .vscode/
 bin/
+dist/
 
 # Local clacks state: the sync key and record store must never be committed,
 # and docker/config/config.toml holds a server token.
