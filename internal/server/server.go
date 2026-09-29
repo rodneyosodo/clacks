@@ -13,7 +13,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Server exposes the atuin-v0-like HTTP API.
+// Server exposes the clacks record-sync HTTP API.
 type Server struct {
 	store *Store
 	mux   *http.ServeMux

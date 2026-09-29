@@ -25,7 +25,7 @@ var insecureFlag bool
 
 // RootCmd builds the cobra root.
 func RootCmd() *cobra.Command {
-	root := &cobra.Command{Use: "clacks", Short: "atuin-style sync for AI coding sessions"}
+	root := &cobra.Command{Use: "clacks", Short: "encrypted sync for AI coding sessions"}
 	root.PersistentFlags().BoolVar(&insecureFlag, "insecure", false, "skip TLS certificate verification (tunnels/self-signed only, never on untrusted networks)")
 	root.AddCommand(registerCmd(), loginCmd(), logoutCmd(), keyCmd(), syncCmd(), statusCmd(), opencodeCmd(), daemonCmd(), serverCmd())
 	return root

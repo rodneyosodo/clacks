@@ -1,5 +1,5 @@
 [Unit]
-Description=clacks sync daemon (atuin-style sync for AI coding sessions)
+Description=clacks sync daemon (encrypted sync for AI coding sessions)
 After=network-online.target
 Wants=network-online.target
 

@@ -7,7 +7,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Record is the atuin-shaped encrypted unit of sync.
+// Record is the encrypted unit of sync.
 type Record struct {
 	ID        string `json:"id"`
 	Host      string `json:"host"`

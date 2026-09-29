@@ -1,6 +1,6 @@
 # clacks
 
-atuin-style sync for AI coding sessions — opencode first.
+Encrypted, self-hosted sync for AI coding sessions — opencode first.
 
 Sessions live in opencode's SQLite database (`~/.local/share/opencode/opencode.db`),
 which is stuck on the machine where it was created. clacks is a single Go binary
@@ -9,20 +9,16 @@ client that pushes local changes and pulls remote ones. A session started on
 machine A can be opened and continued in opencode on machine B. The design leaves
 room for Claude Code and other tools later via the `Source` interface.
 
-Design reference: atuin's record-store sync
-(`crates/atuin-client/src/record/sync/mod.rs`,
-`crates/atuin-domain/src/record/mod.rs`, `crates/atuin-server/src/router.rs`).
-
 ## How it works
 
-- **Records** (same shape as atuin): `id` (UUIDv7), `host` (UUIDv7 per machine),
+- **Records**: `id` (UUIDv7), `host` (UUIDv7 per machine),
   `tag` (e.g. `opencode`), `idx` (sequence per host+tag), `version`, `timestamp`,
   `data`. Payloads are batches of row changes (`{table, pk, time_updated, columns}`)
   cut at ~1 MB / 500 rows, zstd-compressed, then encrypted with XChaCha20-Poly1305
   (AAD = `id|host|tag|idx`). The server never sees plaintext.
 - **Sync loop** (`clacks sync`): scan local changes into new records under this
-  host, diff local vs remote status per `(host, tag)` (atuin's
-  `Operation::{Upload,Download,Noop}`), upload/download the gap, then apply
+  host, diff local vs remote status per `(host, tag)` into an
+  `Upload` / `Download` / `Noop` decision, upload/download the gap, then apply
   records from other hosts past the `applied_idx` cursor through the source.
 - **opencode adapter**: change detection without new indexes (dirty sessions via
   `session.time_updated`, children through existing `message_session_*`,

@@ -6,8 +6,7 @@ import (
 	"github.com/rodneyosodo/clacks/internal/record"
 )
 
-// Op is the sync decision for one (host, tag) series, mirroring atuin's
-// Operation::{Upload,Download,Noop}.
+// Op is the sync decision for one (host, tag) series.
 type Op int
 
 const (
