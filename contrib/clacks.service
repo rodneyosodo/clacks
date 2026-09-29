@@ -1,0 +1,13 @@
+[Unit]
+Description=clacks sync daemon (atuin-style sync for AI coding sessions)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/go/bin/clacks daemon
+Restart=on-failure
+RestartSec=30s
+
+[Install]
+WantedBy=default.target
