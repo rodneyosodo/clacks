@@ -55,6 +55,8 @@ jobs:
         env:
           META_VERSION: ${{ steps.meta.outputs.version }}
           META_COMMIT: ${{ steps.meta.outputs.commit }}
+          META_COMMIT_TIME: ${{ steps.meta.outputs.commit_time }}
+          META_TIME: ${{ steps.meta.outputs.time }}
           META_IMAGE: ${{ steps.meta.outputs.image }}
         run: |
           set -euo pipefail
@@ -68,11 +70,10 @@ jobs:
             DOCKER_IMAGE="${META_IMAGE}" \
             VERSION="${META_VERSION}" \
             COMMIT="${META_COMMIT}" \
+            COMMIT_TIME="${META_COMMIT_TIME}" \
+            TIME="${META_TIME}" \
             TAGS="${META_IMAGE}:latest,${META_IMAGE}:${META_VERSION},${second}" \
             DOCKER_PUSH=true
-            COMMIT_TIME=${{ steps.meta.outputs.commit }}
-            TIME=${{ steps.meta.outputs.time }}
-          tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
