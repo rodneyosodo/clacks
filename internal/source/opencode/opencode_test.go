@@ -114,21 +114,140 @@ func TestChannelSiblingHint(t *testing.T) {
 	}
 }
 
-func TestV2SchemaHelpfulError(t *testing.T) {
-	// An opencode v2 database: session_v2 exists, v1 tables don't.
+func countRows(t *testing.T, db *sql.DB, q string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRowContext(t.Context(), q).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+
+	return n
+}
+
+// openV2Fixture creates an opencode 2.x database at a temp path.
+func openV2Fixture(t *testing.T) (string, *sql.DB) {
+	t.Helper()
 	p := filepath.Join(t.TempDir(), "opencode.db")
 	db, err := sql.Open("sqlite", p+"?cache=shared")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), `CREATE TABLE session_v2(id TEXT PRIMARY KEY)`); err != nil {
+	if err := CreateSchemaV2(t.Context(), db); err != nil {
 		t.Fatal(err)
 	}
-	db.Close()
+
+	return p, db
+}
+
+func seedSessionV2(t *testing.T, db *sql.DB, id string, tu int64) {
+	t.Helper()
+	stmts := []struct {
+		q    string
+		args []any
+	}{
+		{`INSERT OR IGNORE INTO project(id, worktree, time_created, time_updated) VALUES('proj1','/home/alice/work',1,1)`, nil},
+		{`INSERT INTO session_v2(id, project_id, directory, title, version, time_created, time_updated) VALUES(?,'proj1','/home/alice/work','hello','v',1,?)`, []any{id, tu}},
+		{`INSERT INTO session_message(id, session_id, type, seq, time_created, time_updated, data) VALUES(?,?,'user',0,1,?,'{}')`, []any{"msg_" + id, id, tu}},
+	}
+	for _, s := range stmts {
+		if _, err := db.ExecContext(t.Context(), s.q, s.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestScanV2(t *testing.T) {
+	p, db := openV2Fixture(t)
+	defer db.Close()
+	seedSessionV2(t, db, "ses_1", 100)
+
 	src := &Source{DBPath: p}
-	_, err = src.Scan(t.Context(), map[string]int64{})
-	if err == nil || !strings.Contains(err.Error(), "v2 schema") {
-		t.Fatalf("scan should report v2 schema mismatch, got: %v", err)
+	changes, err := src.Scan(t.Context(), map[string]int64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, c := range changes {
+		got[c.Table] = true
+		if c.PK == "" && !c.Tombstone {
+			t.Fatalf("change with empty pk: %+v", c)
+		}
+	}
+	// v2 syncs project, session_v2 and session_message; there is no part or todo.
+	for _, want := range []string{"project", "session_v2", "session_message"} {
+		if !got[want] {
+			t.Errorf("missing change for table %q; got %v", want, got)
+		}
+	}
+	if got["session"] || got["part"] || got["todo"] {
+		t.Errorf("v1-only tables scanned: %v", got)
+	}
+}
+
+func TestScanApplyV2RoundTrip(t *testing.T) {
+	srcPath, srcDB := openV2Fixture(t)
+	defer srcDB.Close()
+	seedSessionV2(t, srcDB, "ses_1", 100)
+
+	src := &Source{DBPath: srcPath}
+	changes, err := src.Scan(t.Context(), map[string]int64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dstPath, dstDB := openV2Fixture(t)
+	defer dstDB.Close()
+	dst := &Source{DBPath: dstPath, LocalHome: "/home/u"}
+	if err := dst.Apply(t.Context(), changes); err != nil {
+		t.Fatal(err)
+	}
+	if got := countRows(t, dstDB, `SELECT COUNT(*) FROM session_v2 WHERE id='ses_1'`); got != 1 {
+		t.Fatalf("session_v2 rows = %d, want 1", got)
+	}
+	if got := countRows(t, dstDB, `SELECT COUNT(*) FROM session_message WHERE session_id='ses_1'`); got != 1 {
+		t.Fatalf("session_message rows = %d, want 1", got)
+	}
+}
+
+func TestMixedVersionApplySkipsForeignTables(t *testing.T) {
+	// v1 records arriving at a v2 machine (and vice versa) must be skipped
+	// rather than erroring or half-writing.
+	v1Path, v1DB := openFixture(t)
+	defer v1DB.Close()
+	seedSession(t, v1DB, "hello", 100)
+	v1Changes, err := (&Source{DBPath: v1Path}).Scan(t.Context(), map[string]int64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	v2Path, v2DB := openV2Fixture(t)
+	defer v2DB.Close()
+	v2Src := &Source{DBPath: v2Path}
+	if err := v2Src.Apply(t.Context(), v1Changes); err != nil {
+		t.Fatalf("v1 -> v2 apply should skip, got: %v", err)
+	}
+	if len(v2Src.Warns) == 0 {
+		t.Error("expected a warning naming the skipped tables")
+	}
+	if got := countRows(t, v2DB, `SELECT COUNT(*) FROM session_v2`); got != 0 {
+		t.Errorf("v2 machine gained %d v2 rows from v1 records", got)
+	}
+
+	// And the reverse direction. The v1 database already holds its own seeded
+	// session, so assert it is unchanged rather than empty.
+	before := countRows(t, v1DB, `SELECT COUNT(*) FROM session`)
+	v2Src2 := &Source{DBPath: v2Path}
+	seedSessionV2(t, v2DB, "ses_9", 100)
+	v2Changes, err := v2Src2.Scan(t.Context(), map[string]int64{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v1Dst := &Source{DBPath: v1Path}
+	if err := v1Dst.Apply(t.Context(), v2Changes); err != nil {
+		t.Fatalf("v2 -> v1 apply should skip, got: %v", err)
+	}
+	if after := countRows(t, v1DB, `SELECT COUNT(*) FROM session`); after != before {
+		t.Errorf("v1 session rows changed %d -> %d applying v2 records", before, after)
 	}
 }
 

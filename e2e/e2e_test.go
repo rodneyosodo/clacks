@@ -26,6 +26,12 @@ type machine struct {
 
 func newMachine(t *testing.T, srvURL, token string, key [32]byte, name string) *machine {
 	t.Helper()
+
+	return newMachineSchema(t, srvURL, token, key, name, opencode.CreateSchema)
+}
+
+func newMachineSchema(t *testing.T, srvURL, token string, key [32]byte, name string, create func(context.Context, *sql.DB) error) *machine {
+	t.Helper()
 	dir := t.TempDir()
 	opDB := filepath.Join(dir, "opencode.db")
 	db, err := sql.Open("sqlite", opDB+"?cache=shared")
@@ -35,7 +41,7 @@ func newMachine(t *testing.T, srvURL, token string, key [32]byte, name string) *
 	if _, err := db.ExecContext(t.Context(), "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
 		t.Fatal(err)
 	}
-	if err := opencode.CreateSchema(t.Context(), db); err != nil {
+	if err := create(t.Context(), db); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
@@ -56,7 +62,7 @@ func newMachine(t *testing.T, srvURL, token string, key [32]byte, name string) *
 	return &machine{host: host, store: st, opDB: opDB, session: sess}
 }
 
-func execOp(t *testing.T, opDB, q string) {
+func execOp(t *testing.T, opDB, q string, args ...any) {
 	t.Helper()
 	db, err := sql.Open("sqlite", opDB+"?cache=shared")
 	if err != nil {
@@ -66,7 +72,7 @@ func execOp(t *testing.T, opDB, q string) {
 	if _, err := db.ExecContext(t.Context(), "PRAGMA busy_timeout=5000;"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(t.Context(), q); err != nil {
+	if _, err := db.ExecContext(t.Context(), q, args...); err != nil {
 		t.Fatalf("%s: %v", q, err)
 	}
 }

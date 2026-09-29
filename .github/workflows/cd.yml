@@ -184,6 +184,6 @@ jobs:
 
             ## Requirements
 
-            clacks syncs opencode **1.18.x**. opencode 2.x renamed its session tables, so a v2 opencode cannot read records written against v1. Every machine must run the same major version.
+            clacks syncs opencode **1.18.x and 2.x**, detecting the schema per machine. Sessions do not cross between the two, so machines you sync together should run the same opencode major version.
 
             Paths follow the XDG layout on every platform (`$XDG_DATA_HOME/clacks`, `$XDG_CONFIG_HOME/clacks`). On Windows, set `CLACKS_HOME` and `CLACKS_CONFIG_HOME` to override the defaults.
