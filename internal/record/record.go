@@ -46,8 +46,10 @@ func (s Status) SortedSeries() []Series {
 		if out[i].Host != out[j].Host {
 			return out[i].Host < out[j].Host
 		}
+
 		return out[i].Tag < out[j].Tag
 	})
+
 	return out
 }
 
@@ -58,5 +60,6 @@ func (s Status) MaxIdx(host, tag string) (uint64, bool) {
 		return 0, false
 	}
 	v, ok := tags[tag]
+
 	return v, ok
 }

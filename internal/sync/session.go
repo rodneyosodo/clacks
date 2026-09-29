@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
 	"github.com/rodneyosodo/clacks/internal/client"
@@ -32,15 +33,16 @@ func (s *Session) Sync(ctx context.Context) error {
 	}
 
 	// 2. Diff.
-	local, err := s.Store.Status()
+	local, err := s.Store.Status(ctx)
 	if err != nil {
 		return err
 	}
-	remote, err := s.Client.Status()
+	remote, err := s.Client.Status(ctx)
 	if err != nil {
 		return fmt.Errorf("remote status: %w", err)
 	}
-	for _, d := range Diff(local, remote) {
+	decisions := Diff(local, remote)
+	for _, d := range decisions {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -48,13 +50,17 @@ func (s *Session) Sync(ctx context.Context) error {
 		}
 		switch d.Op {
 		case Upload:
+			slog.Info("uploading", slog.String("host", d.Host), slog.String("tag", d.Tag))
 			if err := s.upload(ctx, d.Host, d.Tag, remote); err != nil {
 				return err
 			}
 		case Download:
+			slog.Info("downloading", slog.String("host", d.Host), slog.String("tag", d.Tag))
 			if err := s.download(ctx, d.Host, d.Tag, local); err != nil {
 				return err
 			}
+		case Noop:
+			slog.Debug("up to date", slog.String("host", d.Host), slog.String("tag", d.Tag))
 		}
 	}
 
@@ -64,11 +70,12 @@ func (s *Session) Sync(ctx context.Context) error {
 			return fmt.Errorf("apply %s: %w", src.Tag(), err)
 		}
 	}
+
 	return nil
 }
 
 func (s *Session) scanSource(ctx context.Context, src source.Source) error {
-	versions, err := s.Store.RowVersions()
+	versions, err := s.Store.RowVersions(ctx)
 	if err != nil {
 		return err
 	}
@@ -82,8 +89,9 @@ func (s *Session) scanSource(ctx context.Context, src source.Source) error {
 	if len(changes) == 0 {
 		return nil
 	}
+	slog.Debug("scanned local changes", slog.String("tag", src.Tag()), slog.Int("changes", len(changes)))
 	for _, batch := range record.BatchChanges(changes) {
-		next, err := s.Store.NextIdx(s.HostID, src.Tag())
+		next, err := s.Store.NextIdx(ctx, s.HostID, src.Tag())
 		if err != nil {
 			return err
 		}
@@ -98,16 +106,17 @@ func (s *Session) scanSource(ctx context.Context, src source.Source) error {
 			Version: s.Version, Timestamp: record.NowMicros(),
 			Nonce: nonce, Data: data,
 		}
-		if err := s.Store.Append(rec); err != nil {
+		if err := s.Store.Append(ctx, rec); err != nil {
 			return err
 		}
 		// Echo suppression: scanned rows are "already synced".
 		for _, ch := range batch {
-			if err := s.Store.SetRowVersion(ch.Table, ch.PK, ch.TimeUpdated); err != nil {
+			if err := s.Store.SetRowVersion(ctx, ch.Table, ch.PK, ch.TimeUpdated); err != nil {
 				return err
 			}
 		}
 	}
+
 	return nil
 }
 
@@ -126,6 +135,7 @@ func itoa(n uint64) string {
 		b[i] = byte('0' + n%10)
 		n /= 10
 	}
+
 	return string(b[i:])
 }
 
@@ -140,14 +150,14 @@ func (s *Session) upload(ctx context.Context, host, tag string, remote record.St
 			return ctx.Err()
 		default:
 		}
-		recs, err := s.Store.List(host, tag, start, 100)
+		recs, err := s.Store.List(ctx, host, tag, start, 100)
 		if err != nil {
 			return err
 		}
 		if len(recs) == 0 {
 			return nil
 		}
-		if err := s.Client.Upload(recs); err != nil {
+		if err := s.Client.Upload(ctx, recs); err != nil {
 			return err
 		}
 		start = recs[len(recs)-1].Idx + 1
@@ -165,7 +175,7 @@ func (s *Session) download(ctx context.Context, host, tag string, local record.S
 			return ctx.Err()
 		default:
 		}
-		recs, err := s.Client.Download(host, tag, start, 100)
+		recs, err := s.Client.Download(ctx, host, tag, start, 100)
 		if err != nil {
 			return err
 		}
@@ -173,7 +183,7 @@ func (s *Session) download(ctx context.Context, host, tag string, local record.S
 			return nil
 		}
 		for _, r := range recs {
-			if err := s.Store.Append(r); err != nil {
+			if err := s.Store.Append(ctx, r); err != nil {
 				return err
 			}
 		}
@@ -185,7 +195,7 @@ func (s *Session) download(ctx context.Context, host, tag string, local record.S
 }
 
 func (s *Session) applySource(ctx context.Context, src source.Source) error {
-	status, err := s.Store.Status()
+	status, err := s.Store.Status(ctx)
 	if err != nil {
 		return err
 	}
@@ -197,7 +207,7 @@ func (s *Session) applySource(ctx context.Context, src source.Source) error {
 		if host == s.HostID {
 			continue
 		}
-		cursor, err := s.Store.AppliedCursor(host, src.Tag())
+		cursor, err := s.Store.AppliedCursor(ctx, host, src.Tag())
 		if err != nil {
 			return err
 		}
@@ -209,7 +219,7 @@ func (s *Session) applySource(ctx context.Context, src source.Source) error {
 		var changes []record.Change
 		batchStart := start
 		for batchStart <= maxIdx {
-			recs, err := s.Store.List(host, src.Tag(), batchStart, 100)
+			recs, err := s.Store.List(ctx, host, src.Tag(), batchStart, 100)
 			if err != nil {
 				return err
 			}
@@ -223,30 +233,27 @@ func (s *Session) applySource(ctx context.Context, src source.Source) error {
 					return fmt.Errorf("decrypt %s/%d: %w (wrong key? run `clacks key` on the other machine)", host, r.Idx, err)
 				}
 				changes = append(changes, ch...)
-				if err := s.Store.SetAppliedCursor(host, src.Tag(), r.Idx); err != nil {
+				if err := s.Store.SetAppliedCursor(ctx, host, src.Tag(), r.Idx); err != nil {
 					return err
 				}
 			}
 			batchStart = recs[len(recs)-1].Idx + 1
 		}
 		if len(changes) > 0 {
+			slog.Info("applying remote changes", slog.String("tag", src.Tag()), slog.Int("changes", len(changes)))
 			if err := src.Apply(ctx, changes); err != nil {
 				return err
 			}
 			// Echo suppression for applied rows.
-			versions, err := s.Store.RowVersions()
-			_ = versions
-			if err != nil {
-				return err
-			}
 			for _, ch := range changes {
-				if err := s.Store.SetRowVersion(ch.Table, ch.PK, ch.TimeUpdated); err != nil {
+				if err := s.Store.SetRowVersion(ctx, ch.Table, ch.PK, ch.TimeUpdated); err != nil {
 					return err
 				}
 			}
 		}
 		_ = ctx
 	}
+
 	return nil
 }
 
@@ -260,5 +267,6 @@ func statusKeys(status record.Status, tag string) ([]string, bool) {
 	if len(hosts) == 0 {
 		return nil, false
 	}
+
 	return hosts, true
 }

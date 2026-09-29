@@ -1,11 +1,13 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -30,8 +32,9 @@ func New(store *Store) *Server {
 	s.mux.HandleFunc("GET /api/v0/me", s.withAuth(s.handleMe))
 	s.mux.HandleFunc("DELETE /api/v0/store", s.withAuth(s.handleWipe))
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
+
 	return s
 }
 
@@ -46,7 +49,11 @@ type credentials struct {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+	// The status is already committed, so a late encode failure can't be
+	// reported to the client; log it and move on.
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		slog.Error("write response", slog.Any("error", err))
+	}
 }
 
 func writeErr(w http.ResponseWriter, code int, msg string) {
@@ -57,6 +64,7 @@ func newToken() string {
 	var b [32]byte
 	_, _ = rand.Read(b[:])
 	sum := sha256.Sum256(b[:])
+
 	return hex.EncodeToString(sum[:])
 }
 
@@ -64,21 +72,25 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	var c credentials
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.Username == "" || c.Password == "" {
 		writeErr(w, 400, "username and password required")
+
 		return
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(c.Password), bcrypt.DefaultCost)
 	if err != nil {
 		writeErr(w, 500, "hash failed")
+
 		return
 	}
-	_, err = s.store.db.Exec(`INSERT INTO users(username, password_hash) VALUES(?,?)`, c.Username, hash)
+	_, err = s.store.db.ExecContext(r.Context(), `INSERT INTO users(username, password_hash) VALUES(?,?)`, c.Username, hash)
 	if err != nil {
 		writeErr(w, 409, "username taken")
+
 		return
 	}
 	tok := newToken()
-	if _, err := s.store.db.Exec(`INSERT INTO tokens(token, username) VALUES(?,?)`, tok, c.Username); err != nil {
+	if _, err := s.store.db.ExecContext(r.Context(), `INSERT INTO tokens(token, username) VALUES(?,?)`, tok, c.Username); err != nil {
 		writeErr(w, 500, "token failed")
+
 		return
 	}
 	writeJSON(w, 200, map[string]string{"token": tok})
@@ -88,21 +100,25 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var c credentials
 	if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.Username == "" || c.Password == "" {
 		writeErr(w, 400, "username and password required")
+
 		return
 	}
 	var hash []byte
-	err := s.store.db.QueryRow(`SELECT password_hash FROM users WHERE username=?`, c.Username).Scan(&hash)
+	err := s.store.db.QueryRowContext(r.Context(), `SELECT password_hash FROM users WHERE username=?`, c.Username).Scan(&hash)
 	if err != nil {
 		writeErr(w, 401, "invalid credentials")
+
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword(hash, []byte(c.Password)); err != nil {
 		writeErr(w, 401, "invalid credentials")
+
 		return
 	}
 	tok := newToken()
-	if _, err := s.store.db.Exec(`INSERT INTO tokens(token, username) VALUES(?,?)`, tok, c.Username); err != nil {
+	if _, err := s.store.db.ExecContext(r.Context(), `INSERT INTO tokens(token, username) VALUES(?,?)`, tok, c.Username); err != nil {
 		writeErr(w, 500, "token failed")
+
 		return
 	}
 	writeJSON(w, 200, map[string]string{"token": tok})
@@ -110,29 +126,42 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) username(r *http.Request) (string, bool) {
 	v, ok := r.Context().Value(ctxUserKey{}).(string)
+
 	return v, ok
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	user, _ := s.username(r)
 	st := record.Status{}
-	rows, err := s.store.db.Query(`SELECT host, tag, MAX(idx) FROM records WHERE owner=? GROUP BY host, tag`, user)
+	rows, err := s.store.db.QueryContext(r.Context(), `SELECT host, tag, MAX(idx) FROM records WHERE owner=? GROUP BY host, tag`, user)
 	if err != nil {
 		writeErr(w, 500, "db error")
+
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var h, t string
 		var m int64
 		if err := rows.Scan(&h, &t, &m); err != nil {
 			writeErr(w, 500, "db error")
+
 			return
 		}
 		if st[h] == nil {
 			st[h] = map[string]uint64{}
 		}
+		if m < 0 {
+			writeErr(w, 500, "corrupt record index")
+
+			return
+		}
 		st[h][t] = uint64(m)
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, 500, "db error")
+
+		return
 	}
 	writeJSON(w, 200, st)
 }
@@ -142,30 +171,35 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	var recs []*record.Record
 	if err := json.NewDecoder(r.Body).Decode(&recs); err != nil {
 		writeErr(w, 400, "bad records")
+
 		return
 	}
-	tx, err := s.store.db.Begin()
+	tx, err := s.store.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		writeErr(w, 500, "db error")
+
 		return
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	for _, rec := range recs {
 		if rec.ID == "" || rec.Host == "" || rec.Tag == "" {
 			writeErr(w, 400, "record missing id/host/tag")
+
 			return
 		}
-		_, err := tx.Exec(
+		_, err := tx.ExecContext(r.Context(),
 			`INSERT OR IGNORE INTO records(id, owner, host, tag, idx, version, timestamp, nonce, data) VALUES(?,?,?,?,?,?,?,?,?)`,
 			rec.ID, user, rec.Host, rec.Tag, rec.Idx, rec.Version, rec.Timestamp, rec.Nonce, rec.Data,
 		)
 		if err != nil {
 			writeErr(w, 500, "db error")
+
 			return
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		writeErr(w, 500, "db error")
+
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": "ok"})
@@ -177,6 +211,7 @@ func (s *Server) handleNext(w http.ResponseWriter, r *http.Request) {
 	host, tag := q.Get("host"), q.Get("tag")
 	if host == "" || tag == "" {
 		writeErr(w, 400, "host and tag required")
+
 		return
 	}
 	start := uint64(0)
@@ -184,6 +219,7 @@ func (s *Server) handleNext(w http.ResponseWriter, r *http.Request) {
 		n, err := strconv.ParseUint(v, 10, 64)
 		if err != nil {
 			writeErr(w, 400, "bad start")
+
 			return
 		}
 		start = n
@@ -193,27 +229,35 @@ func (s *Server) handleNext(w http.ResponseWriter, r *http.Request) {
 		n, err := strconv.Atoi(v)
 		if err != nil || n <= 0 || n > 1000 {
 			writeErr(w, 400, "bad count")
+
 			return
 		}
 		count = n
 	}
-	rows, err := s.store.db.Query(
+	rows, err := s.store.db.QueryContext(r.Context(),
 		`SELECT id, host, tag, idx, version, timestamp, nonce, data FROM records WHERE owner=? AND host=? AND tag=? AND idx>=? ORDER BY idx ASC LIMIT ?`,
 		user, host, tag, start, count,
 	)
 	if err != nil {
 		writeErr(w, 500, "db error")
+
 		return
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	out := []*record.Record{}
 	for rows.Next() {
 		rec := &record.Record{}
 		if err := rows.Scan(&rec.ID, &rec.Host, &rec.Tag, &rec.Idx, &rec.Version, &rec.Timestamp, &rec.Nonce, &rec.Data); err != nil {
 			writeErr(w, 500, "db error")
+
 			return
 		}
 		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		writeErr(w, 500, "db error")
+
+		return
 	}
 	writeJSON(w, 200, out)
 }
@@ -225,19 +269,21 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWipe(w http.ResponseWriter, r *http.Request) {
 	user, _ := s.username(r)
-	if _, err := s.store.db.Exec(`DELETE FROM records WHERE owner=?`, user); err != nil {
+	if _, err := s.store.db.ExecContext(r.Context(), `DELETE FROM records WHERE owner=?`, user); err != nil {
 		writeErr(w, 500, "db error")
+
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
 // userByToken resolves a token to a username.
-func (s *Server) userByToken(tok string) (string, error) {
+func (s *Server) userByToken(ctx context.Context, tok string) (string, error) {
 	var u string
-	err := s.store.db.QueryRow(`SELECT username FROM tokens WHERE token=?`, tok).Scan(&u)
+	err := s.store.db.QueryRowContext(ctx, `SELECT username FROM tokens WHERE token=?`, tok).Scan(&u)
 	if err == sql.ErrNoRows {
 		return "", sql.ErrNoRows
 	}
+
 	return u, err
 }

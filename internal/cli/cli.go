@@ -2,7 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -10,6 +13,7 @@ import (
 	"github.com/rodneyosodo/clacks/internal/client"
 	"github.com/rodneyosodo/clacks/internal/config"
 	"github.com/rodneyosodo/clacks/internal/crypto"
+	"github.com/rodneyosodo/clacks/internal/logging"
 	"github.com/rodneyosodo/clacks/internal/paths"
 	"github.com/rodneyosodo/clacks/internal/record"
 	"github.com/rodneyosodo/clacks/internal/server"
@@ -23,30 +27,53 @@ import (
 // self-signed servers (e.g. minimal containers without a CA bundle).
 var insecureFlag bool
 
+// logLevel is the global --log-level flag.
+var logLevel string
+
 // RootCmd builds the cobra root.
 func RootCmd() *cobra.Command {
-	root := &cobra.Command{Use: "clacks", Short: "encrypted sync for AI coding sessions"}
+	root := &cobra.Command{
+		Use:           "clacks",
+		Short:         "encrypted sync for AI coding sessions",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			if logLevel == "" {
+				logLevel = logging.LevelFromEnv()
+			}
+			logging.InitCLI(logLevel)
+		},
+	}
 	root.PersistentFlags().BoolVar(&insecureFlag, "insecure", false, "skip TLS certificate verification (tunnels/self-signed only, never on untrusted networks)")
+	root.PersistentFlags().StringVar(&logLevel, "log-level", "", "log level: debug, info, warn, error (or $CLACKS_LOG_LEVEL)")
 	root.AddCommand(registerCmd(), loginCmd(), logoutCmd(), keyCmd(), syncCmd(), statusCmd(), opencodeCmd(), daemonCmd(), serverCmd())
+
 	return root
+}
+
+// fail reports err on stderr and exits non-zero. The error text is the whole
+// message: wrapping it in a level/attribute envelope just adds noise.
+func fail(err error) {
+	slog.Error(err.Error())
+	os.Exit(1)
 }
 
 func mustConfig() *config.Config {
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "config: "+err.Error())
-		os.Exit(1)
+		fail(fmt.Errorf("config: %w", err))
 	}
 	// Escape hatch last-wins source: --insecure flag, then CLACKS_INSECURE
 	// env, then insecure_skip_verify in config. Applies to this run only.
 	if insecureFlag || insecureFromEnv() {
 		if !cfg.InsecureSkipVerify {
-			fmt.Fprintln(os.Stderr, "warning: skipping TLS certificate verification (insecure). Use only on networks you trust.")
+			slog.Warn("skipping TLS certificate verification (insecure); only use on networks you trust")
 		}
 		cfg.InsecureSkipVerify = true
 	} else if cfg.InsecureSkipVerify {
-		fmt.Fprintln(os.Stderr, "warning: skipping TLS certificate verification (insecure_skip_verify). Use only on networks you trust.")
+		slog.Warn("skipping TLS certificate verification (insecure_skip_verify); only use on networks you trust")
 	}
+
 	return cfg
 }
 
@@ -55,6 +82,7 @@ func insecureFromEnv() bool {
 	case "1", "true", "yes":
 		return true
 	}
+
 	return false
 }
 
@@ -64,33 +92,32 @@ func loadKey() [32]byte {
 	if m := os.Getenv("CLACKS_KEY"); m != "" {
 		k, err := crypto.KeyFromMnemonic(strings.TrimSpace(m))
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "bad CLACKS_KEY: "+err.Error())
-			os.Exit(1)
+			fail(fmt.Errorf("bad CLACKS_KEY: %w", err))
 		}
+
 		return k
 	}
 	kp := paths.KeyPath()
 	if data, err := os.ReadFile(kp); err == nil {
-		k, err := crypto.KeyFromMnemonic(strings.TrimSpace(string(data)))
-		if err == nil {
+		if k, err := crypto.KeyFromMnemonic(strings.TrimSpace(string(data))); err == nil {
 			return k
 		}
 	}
 	k, err := crypto.NewKey()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "keygen: "+err.Error())
-		os.Exit(1)
+		fail(fmt.Errorf("keygen: %w", err))
 	}
 	m, err := crypto.ToMnemonic(k)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "mnemonic: "+err.Error())
-		os.Exit(1)
+		fail(fmt.Errorf("mnemonic: %w", err))
 	}
-	_ = os.MkdirAll(paths.ClacksHome(), 0o755)
+	if err := os.MkdirAll(paths.ClacksHome(), 0o755); err != nil {
+		fail(fmt.Errorf("clacks home: %w", err))
+	}
 	if err := os.WriteFile(kp, []byte(m+"\n"), 0o600); err != nil {
-		fmt.Fprintln(os.Stderr, "key save: "+err.Error())
-		os.Exit(1)
+		fail(fmt.Errorf("key save: %w", err))
 	}
+
 	return k
 }
 
@@ -103,6 +130,7 @@ func opencodeSource(cfg *config.Config) *opencode.Source {
 	for _, r := range cfg.PathMap {
 		rules = append(rules, [2]string{r.From, r.To})
 	}
+
 	return &opencode.Source{
 		DBPath:           dbPath,
 		Since:            cfg.Sources.Opencode.Since,
@@ -118,56 +146,54 @@ func buildSession(cfg *config.Config, key [32]byte, store *record.Store) *syncpk
 		src.Store = store
 		sources = append(sources, src)
 	}
+
 	return &syncpkg.Session{
 		HostID: cfg.HostID, Key: key, Store: store,
 		Client: client.New(cfg.SyncAddress, cfg.Token, cfg.InsecureSkipVerify), Sources: sources,
 	}
 }
 
-func registerCmd() *cobra.Command {
+// authCmd builds register/login, which differ only in the client call.
+func authCmd(use, short, done string, call func(context.Context, *client.Client, string, string) (string, error)) *cobra.Command {
 	var username, password string
-	cmd := &cobra.Command{Use: "register", Short: "Register on the sync server",
+	cmd := &cobra.Command{
+		Use:   use,
+		Short: short,
 		Run: func(cmd *cobra.Command, args []string) {
-			cfg := mustConfig()
 			if username == "" || password == "" {
-				fmt.Fprintln(os.Stderr, "register --username U --password P")
-				os.Exit(1)
+				fail(fmt.Errorf("%s --username U --password P", use))
 			}
-			tok, err := client.New(cfg.SyncAddress, "", cfg.InsecureSkipVerify).Register(username, password)
+			cfg := mustConfig()
+			c := client.New(cfg.SyncAddress, "", cfg.InsecureSkipVerify)
+			tok, err := call(cmd.Context(), c, username, password)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "register: "+err.Error())
-				os.Exit(1)
+				fail(fmt.Errorf("%s: %w", use, err))
 			}
 			cfg.Token = tok
-			_ = config.Save(cfg)
-			fmt.Println("registered")
-		}}
+			if err := config.Save(cfg); err != nil {
+				fail(fmt.Errorf("save config: %w", err))
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), done)
+		},
+	}
 	cmd.Flags().StringVar(&username, "username", "", "username")
 	cmd.Flags().StringVar(&password, "password", "", "password")
+
 	return cmd
 }
 
+func registerCmd() *cobra.Command {
+	return authCmd("register", "Register on the sync server", "registered",
+		func(ctx context.Context, c *client.Client, u, p string) (string, error) {
+			return c.Register(ctx, u, p)
+		})
+}
+
 func loginCmd() *cobra.Command {
-	var username, password string
-	cmd := &cobra.Command{Use: "login", Short: "Log in to the sync server",
-		Run: func(cmd *cobra.Command, args []string) {
-			cfg := mustConfig()
-			if username == "" || password == "" {
-				fmt.Fprintln(os.Stderr, "login --username U --password P")
-				os.Exit(1)
-			}
-			tok, err := client.New(cfg.SyncAddress, "", cfg.InsecureSkipVerify).Login(username, password)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "login: "+err.Error())
-				os.Exit(1)
-			}
-			cfg.Token = tok
-			_ = config.Save(cfg)
-			fmt.Println("logged in")
-		}}
-	cmd.Flags().StringVar(&username, "username", "", "username")
-	cmd.Flags().StringVar(&password, "password", "", "password")
-	return cmd
+	return authCmd("login", "Log in to the sync server", "logged in",
+		func(ctx context.Context, c *client.Client, u, p string) (string, error) {
+			return c.Login(ctx, u, p)
+		})
 }
 
 func logoutCmd() *cobra.Command {
@@ -175,21 +201,22 @@ func logoutCmd() *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg := mustConfig()
 			cfg.Token = ""
-			_ = config.Save(cfg)
-			fmt.Println("logged out")
+			if err := config.Save(cfg); err != nil {
+				fail(fmt.Errorf("save config: %w", err))
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "logged out")
 		}}
 }
 
 func keyCmd() *cobra.Command {
 	return &cobra.Command{Use: "key", Short: "Print the sync mnemonic to copy to another machine",
 		Run: func(cmd *cobra.Command, args []string) {
-			k := loadKey()
-			m, err := crypto.ToMnemonic(k)
+			m, err := crypto.ToMnemonic(loadKey())
 			if err != nil {
-				fmt.Fprintln(os.Stderr, err.Error())
-				os.Exit(1)
+				fail(err)
 			}
-			fmt.Println(m)
+			// The mnemonic is the product of this command: stdout on purpose.
+			fmt.Fprintln(cmd.OutOrStdout(), m)
 		}}
 }
 
@@ -202,8 +229,8 @@ func parseSince(s string) int64 {
 			return t.UnixMilli()
 		}
 	}
-	fmt.Fprintln(os.Stderr, "bad --since, want RFC3339 or YYYY-MM-DD")
-	os.Exit(1)
+	fail(errors.New("bad --since, want RFC3339 or YYYY-MM-DD"))
+
 	return 0
 }
 
@@ -214,30 +241,29 @@ func syncCmd() *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg := mustConfig()
 			if cfg.Token == "" {
-				fmt.Fprintln(os.Stderr, "not logged in: run clacks register/login")
-				os.Exit(1)
+				fail(errors.New("not logged in: run clacks register/login"))
 			}
 			if since != "" {
 				cfg.Sources.Opencode.Since = parseSince(since)
 			}
+			ctx := cmd.Context()
 			key := loadKey()
-			store, err := record.Open(paths.DBPath())
+			store, err := record.Open(ctx, paths.DBPath())
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "store: "+err.Error())
-				os.Exit(1)
+				fail(fmt.Errorf("store: %w", err))
 			}
-			defer store.Close()
-			fmt.Fprintf(os.Stderr, "opencode db: %s\n", opencodeSource(cfg).DBPath)
+			defer func() { _ = store.Close() }()
+			slog.Debug("syncing", slog.String("opencode_db", opencodeSource(cfg).DBPath), slog.Bool("force", force))
 			sess := buildSession(cfg, key, store)
 			sess.Force = force
-			if err := sess.Sync(context.Background()); err != nil {
-				fmt.Fprintln(os.Stderr, "sync: "+err.Error())
-				os.Exit(1)
+			if err := sess.Sync(ctx); err != nil {
+				fail(fmt.Errorf("sync: %w", err))
 			}
-			fmt.Println("sync ok")
+			slog.Info("sync complete")
 		}}
 	cmd.Flags().BoolVar(&force, "force", false, "re-emit all local rows, ignoring sync cursors")
 	cmd.Flags().StringVar(&since, "since", "", "limit first upload (RFC3339 or YYYY-MM-DD)")
+
 	return cmd
 }
 
@@ -245,31 +271,34 @@ func statusCmd() *cobra.Command {
 	return &cobra.Command{Use: "status", Short: "Show local and remote status per host/tag",
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg := mustConfig()
-			store, err := record.Open(paths.DBPath())
+			ctx := cmd.Context()
+			store, err := record.Open(ctx, paths.DBPath())
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "store: "+err.Error())
-				os.Exit(1)
+				fail(fmt.Errorf("store: %w", err))
 			}
-			defer store.Close()
-			local, _ := store.Status()
-			fmt.Println("local:")
-			printStatus(local)
+			defer func() { _ = store.Close() }()
+			out := cmd.OutOrStdout()
+			local, err := store.Status(ctx)
+			if err != nil {
+				fail(fmt.Errorf("local status: %w", err))
+			}
+			fmt.Fprintln(out, "local:")
+			printStatus(out, local)
 			if cfg.Token != "" {
-				remote, err := client.New(cfg.SyncAddress, cfg.Token, cfg.InsecureSkipVerify).Status()
+				remote, err := client.New(cfg.SyncAddress, cfg.Token, cfg.InsecureSkipVerify).Status(ctx)
 				if err != nil {
-					fmt.Fprintln(os.Stderr, "remote: "+err.Error())
-					os.Exit(1)
+					fail(fmt.Errorf("remote status: %w", err))
 				}
-				fmt.Println("remote:")
-				printStatus(remote)
+				fmt.Fprintln(out, "remote:")
+				printStatus(out, remote)
 			}
 		}}
 }
 
-func printStatus(st record.Status) {
+func printStatus(w io.Writer, st record.Status) {
 	for _, s := range st.SortedSeries() {
 		v, _ := st.MaxIdx(s.Host, s.Tag)
-		fmt.Printf("  %s %s %d\n", s.Host, s.Tag, v)
+		fmt.Fprintf(w, "  %s %s %d\n", s.Host, s.Tag, v)
 	}
 }
 
@@ -278,27 +307,29 @@ func opencodeCmd() *cobra.Command {
 	cmd.AddCommand(&cobra.Command{Use: "sessions", Short: "List sessions and sync state",
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg := mustConfig()
-			store, err := record.Open(paths.DBPath())
+			ctx := cmd.Context()
+			store, err := record.Open(ctx, paths.DBPath())
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "store: "+err.Error())
-				os.Exit(1)
+				fail(fmt.Errorf("store: %w", err))
 			}
-			defer store.Close()
-			versions, _ := store.RowVersions()
-			src := opencodeSource(cfg)
-			infos, err := src.ListSessions(versions)
+			defer func() { _ = store.Close() }()
+			versions, err := store.RowVersions(ctx)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "sessions: "+err.Error())
-				os.Exit(1)
+				fail(fmt.Errorf("row versions: %w", err))
+			}
+			infos, err := opencodeSource(cfg).ListSessions(ctx, versions)
+			if err != nil {
+				fail(fmt.Errorf("sessions: %w", err))
 			}
 			for _, in := range infos {
 				mark := "pending"
 				if in.Synced {
 					mark = "synced"
 				}
-				fmt.Printf("%s %s [%s]\n", in.ID, in.Title, mark)
+				fmt.Fprintf(cmd.OutOrStdout(), "%s %s [%s]\n", in.ID, in.Title, mark)
 			}
 		}})
+
 	return cmd
 }
 
@@ -307,24 +338,24 @@ func daemonCmd() *cobra.Command {
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg := mustConfig()
 			if cfg.Token == "" {
-				fmt.Fprintln(os.Stderr, "not logged in")
-				os.Exit(1)
+				fail(errors.New("not logged in"))
 			}
+			ctx := cmd.Context()
 			key := loadKey()
-			store, err := record.Open(paths.DBPath())
+			store, err := record.Open(ctx, paths.DBPath())
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "store: "+err.Error())
-				os.Exit(1)
+				fail(fmt.Errorf("store: %w", err))
 			}
-			defer store.Close()
+			defer func() { _ = store.Close() }()
 			interval := cfg.SyncFrequencyDuration()
-			fmt.Printf("daemon every %s\n", interval)
+			slog.Info("daemon started", slog.Duration("interval", interval))
 			for {
 				sess := buildSession(cfg, key, store)
-				if err := sess.Sync(context.Background()); err != nil {
-					fmt.Fprintln(os.Stderr, "sync: "+err.Error())
+				start := time.Now()
+				if err := sess.Sync(ctx); err != nil {
+					slog.Error("sync failed", slog.Any("error", err))
 				} else {
-					fmt.Println("sync ok", time.Now().Format(time.RFC3339))
+					slog.Info("sync complete", slog.Duration("took", time.Since(start)))
 				}
 				time.Sleep(interval)
 			}
@@ -334,27 +365,28 @@ func daemonCmd() *cobra.Command {
 func serverCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "server", Short: "Run the sync server"}
 	start := &cobra.Command{Use: "start", Short: "Start the server",
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			logging.InitServer(logLevel)
+		},
 		Run: func(cmd *cobra.Command, args []string) {
 			listen, _ := cmd.Flags().GetString("listen")
 			dbPath, _ := cmd.Flags().GetString("db")
 			if dbPath == "" {
 				dbPath = paths.ClacksHome() + "/server.db"
 			}
-			st, err := server.Open(dbPath)
+			st, err := server.Open(cmd.Context(), dbPath)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "server store: "+err.Error())
-				os.Exit(1)
+				fail(fmt.Errorf("server store: %w", err))
 			}
-			defer st.Close()
-			srv := server.New(st)
-			fmt.Printf("listening on %s\n", listen)
-			if err := listenAndServe(listen, srv); err != nil {
-				fmt.Fprintln(os.Stderr, err.Error())
-				os.Exit(1)
+			defer func() { _ = st.Close() }()
+			slog.Info("server listening", slog.String("addr", listen), slog.String("db", dbPath))
+			if err := listenAndServe(cmd.Context(), listen, server.New(st)); err != nil {
+				fail(err)
 			}
 		}}
 	start.Flags().String("listen", ":8080", "listen address")
 	start.Flags().String("db", "", "server db path")
 	cmd.AddCommand(start)
+
 	return cmd
 }

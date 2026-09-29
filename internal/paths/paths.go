@@ -15,6 +15,7 @@ func ClacksHome() string {
 		return filepath.Join(v, "clacks")
 	}
 	home, _ := os.UserHomeDir()
+
 	return filepath.Join(home, ".local", "share", "clacks")
 }
 
@@ -28,6 +29,7 @@ func ConfigHome() string {
 		return filepath.Join(v, "clacks")
 	}
 	home, _ := os.UserHomeDir()
+
 	return filepath.Join(home, ".config", "clacks")
 }
 
@@ -41,6 +43,7 @@ func OpencodeDBPath() string {
 		return filepath.Join(v, "opencode", "opencode.db")
 	}
 	home, _ := os.UserHomeDir()
+
 	return filepath.Join(home, ".local", "share", "opencode", "opencode.db")
 }
 
@@ -49,6 +52,7 @@ func KeyPath() string {
 	if v := os.Getenv("CLACKS_KEY_FILE"); v != "" {
 		return v
 	}
+
 	return filepath.Join(ClacksHome(), "key")
 }
 
@@ -57,5 +61,6 @@ func DBPath() string {
 	if v := os.Getenv("CLACKS_DB"); v != "" {
 		return v
 	}
+
 	return filepath.Join(ClacksHome(), "clacks.db")
 }

@@ -61,7 +61,9 @@ func Diff(local, remote record.Status) []Decision {
 		if out[i].Host != out[j].Host {
 			return out[i].Host < out[j].Host
 		}
+
 		return out[i].Tag < out[j].Tag
 	})
+
 	return out
 }

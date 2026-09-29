@@ -1,6 +1,9 @@
 package opencode
 
-import "database/sql"
+import (
+	"context"
+	"database/sql"
+)
 
 // Schema mirrors the opencode tables clacks syncs (subset of columns is
 // fine; adapters intersect on PRAGMA table_info).
@@ -55,10 +58,11 @@ CREATE INDEX IF NOT EXISTS todo_session_idx ON todo(session_id);
 `
 
 // CreateSchema builds fixture opencode tables.
-func CreateSchema(db *sql.DB) error {
-	if _, err := db.Exec("PRAGMA foreign_keys=ON;"); err != nil {
+func CreateSchema(ctx context.Context, db *sql.DB) error {
+	if _, err := db.ExecContext(ctx, "PRAGMA foreign_keys=ON;"); err != nil {
 		return err
 	}
-	_, err := db.Exec(Schema)
+	_, err := db.ExecContext(ctx, Schema)
+
 	return err
 }

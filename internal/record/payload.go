@@ -29,7 +29,7 @@ const (
 )
 
 // EncodePayload marshals, compresses and encrypts changes for a record.
-func EncodePayload(key [32]byte, aad []byte, changes []Change) (nonce, data []byte, err error) {
+func EncodePayload(key [32]byte, aad []byte, changes []Change) ([]byte, []byte, error) {
 	p := Payload{Changes: changes}
 	raw, err := json.Marshal(p)
 	if err != nil {
@@ -41,6 +41,7 @@ func EncodePayload(key [32]byte, aad []byte, changes []Change) (nonce, data []by
 	}
 	compressed := enc.EncodeAll(raw, nil)
 	_ = enc.Close()
+
 	return crypto.Encrypt(key, aad, compressed)
 }
 
@@ -63,6 +64,7 @@ func DecodePayload(key [32]byte, aad, nonce, data []byte) ([]Change, error) {
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, err
 	}
+
 	return p.Changes, nil
 }
 
@@ -70,10 +72,7 @@ func DecodePayload(key [32]byte, aad, nonce, data []byte) ([]Change, error) {
 func BatchChanges(changes []Change) [][]Change {
 	var out [][]Change
 	for len(changes) > 0 {
-		n := len(changes)
-		if n > MaxBatchRows {
-			n = MaxBatchRows
-		}
+		n := min(len(changes), MaxBatchRows)
 		// Refine by encoded size.
 		end := n
 		for end > 1 {
@@ -86,5 +85,6 @@ func BatchChanges(changes []Change) [][]Change {
 		out = append(out, changes[:end])
 		changes = changes[end:]
 	}
+
 	return out
 }

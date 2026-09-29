@@ -58,6 +58,7 @@ func (c *Config) SyncFrequencyDuration() time.Duration {
 	if err != nil {
 		return 5 * time.Minute
 	}
+
 	return d
 }
 
@@ -66,6 +67,7 @@ func Path() string {
 	if v := os.Getenv("CLACKS_CONFIG"); v != "" {
 		return v
 	}
+
 	return filepath.Join(paths.ConfigHome(), "config.toml")
 }
 
@@ -79,8 +81,10 @@ func Load() (*Config, error) {
 			if err := Save(cfg); err != nil {
 				return nil, err
 			}
+
 			return cfg, nil
 		}
+
 		return nil, err
 	}
 	if _, err := toml.Decode(string(data), cfg); err != nil {
@@ -92,6 +96,7 @@ func Load() (*Config, error) {
 			return nil, err
 		}
 	}
+
 	return cfg, nil
 }
 
@@ -106,5 +111,6 @@ func Save(cfg *Config) error {
 		return err
 	}
 	defer f.Close()
+
 	return toml.NewEncoder(f).Encode(cfg)
 }

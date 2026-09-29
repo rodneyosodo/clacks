@@ -6,8 +6,6 @@ import (
 	"github.com/rodneyosodo/clacks/internal/record"
 )
 
-func u64(n uint64) *uint64 { return &n }
-
 func TestDiff(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -89,5 +87,4 @@ func TestDiffCarriesIdx(t *testing.T) {
 	if ds[0].Local == nil || *ds[0].Local != 4 || ds[0].Remote == nil || *ds[0].Remote != 2 {
 		t.Fatalf("idx not carried: %+v", ds[0])
 	}
-	var _ = u64
 }

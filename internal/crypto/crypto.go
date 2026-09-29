@@ -17,6 +17,7 @@ func NewKey() ([32]byte, error) {
 	if _, err := rand.Read(k[:]); err != nil {
 		return k, err
 	}
+
 	return k, nil
 }
 
@@ -36,20 +37,22 @@ func KeyFromMnemonic(mnemonic string) ([32]byte, error) {
 		return k, fmt.Errorf("bad entropy length %d", len(entropy))
 	}
 	copy(k[:], entropy)
+
 	return k, nil
 }
 
 // Encrypt encrypts plaintext with AAD, returning nonce and ciphertext.
-func Encrypt(key [32]byte, aad, plaintext []byte) (nonce, ciphertext []byte, err error) {
+func Encrypt(key [32]byte, aad, plaintext []byte) ([]byte, []byte, error) {
 	a, err := chacha20poly1305.NewX(key[:])
 	if err != nil {
 		return nil, nil, err
 	}
-	nonce = make([]byte, a.NonceSize())
+	nonce := make([]byte, a.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, nil, err
 	}
-	ciphertext = a.Seal(nil, nonce, plaintext, aad)
+	ciphertext := a.Seal(nil, nonce, plaintext, aad)
+
 	return nonce, ciphertext, nil
 }
 
@@ -62,6 +65,7 @@ func Decrypt(key [32]byte, aad, nonce, ciphertext []byte) ([]byte, error) {
 	if len(nonce) != a.NonceSize() {
 		return nil, errors.New("bad nonce size")
 	}
+
 	return a.Open(nil, nonce, ciphertext, aad)
 }
 

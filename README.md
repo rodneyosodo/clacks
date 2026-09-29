@@ -77,6 +77,34 @@ config file), `XDG_DATA_HOME` / `XDG_CONFIG_HOME` (machine-B isolation:
 `CLACKS_INSECURE=1` / `clacks --insecure` skips TLS verification for one run
 without editing the config.
 
+## Logging
+
+The client speaks to a person, the server to a log pipeline, so they log
+differently. Both go through `log/slog`.
+
+- **CLI**: one plain line per record on stderr — no timestamps, no level
+  prefixes, no quoted error blobs. Command results stay on stdout, so
+  `clacks status | grep ses_` and `clacks key > key.txt` keep working.
+- **Server**: JSON on stdout, ready for collection.
+
+Set the level with `--log-level debug|info|warn|error` or `CLACKS_LOG_LEVEL`:
+
+```sh
+$ clacks status
+local:
+  01a0cec6-... opencode 3097
+remote status: dial tcp [::1]:8080: connect: connection refused
+
+$ clacks --log-level debug sync
+syncing opencode_db=/root/.local/share/opencode/opencode.db force=false
+scanned local changes tag=opencode changes=2
+uploading host=01a0cccc-... tag=opencode
+sync complete
+
+$ clacks server start
+{"time":"...","level":"INFO","msg":"server listening","addr":":8080","db":"..."}
+```
+
 ## TLS errors (`x509: certificate signed by unknown authority`)
 
 Both ngrok and Cloudflare tunnels use publicly-trusted CAs, so this error on

@@ -15,11 +15,13 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		tok = strings.TrimSpace(tok)
 		if tok == "" {
 			writeErr(w, 401, "missing token")
+
 			return
 		}
-		user, err := s.userByToken(tok)
+		user, err := s.userByToken(r.Context(), tok)
 		if err != nil {
 			writeErr(w, 401, "invalid token")
+
 			return
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), ctxUserKey{}, user)))

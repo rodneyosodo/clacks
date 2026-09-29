@@ -1,12 +1,66 @@
 version: "2"
+
+run:
+  timeout: 10m
+  allow-parallel-runners: true
+  modules-download-mode: mod
+
+issues:
+  max-issues-per-linter: 100
+  max-same-issues: 100
+
 linters:
-  enable:
-    - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
+  default: all
+  disable:
+    - cyclop
+    - depguard
+    - err113
+    - exhaustive
+    - exhaustruct # require every struct field to be set
+    - exhaustruct_v5
+    - funlen # sync algorithms are inherently long
+    - gochecknoglobals
+    - goconst # table names in tests repeat by design
+    - lll
+    - mnd # magic numbers (1MB/500 rows) are documented constants
+    - paralleltest
+    - recvcheck
+    - revive # stuttering false positives
+    - tagliatelle
+    - testpackage
+    - varnamelen
+    - wrapcheck
+    - wsl
+    - wsl_v5
+    - noinlineerr
+    - unqueryvet
+    - gomodguard # deprecated
+  settings:
+    gocritic:
+      enable-all: true
+      disabled-checks:
+        - exitAfterDefer
+        - whyNoLint
+        # Contradicts the nonamedreturns linter, which we keep on: this asks
+        # for named results, that forbids them. Pick one, and we picked
+        # nonamedreturns.
+        - unnamedResult
+    gocognit:
+      min-complexity: 70 # Scan/Apply/applySource are sequential sync loops
+    gocyclo:
+      min-complexity: 40 # same reasoning as gocognit
+    staticcheck:
+      checks:
+        - "all"
+        - "-QF1008"
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+
 formatters:
-  enable:
-    - gofmt
-    - goimports
+  exclusions:
+    generated: lax

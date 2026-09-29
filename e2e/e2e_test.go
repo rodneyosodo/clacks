@@ -32,15 +32,15 @@ func newMachine(t *testing.T, srvURL, token string, key [32]byte, name string) *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
+	if _, err := db.ExecContext(t.Context(), "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
 		t.Fatal(err)
 	}
-	if err := opencode.CreateSchema(db); err != nil {
+	if err := opencode.CreateSchema(t.Context(), db); err != nil {
 		t.Fatal(err)
 	}
 	db.Close()
 
-	st, err := record.Open(filepath.Join(dir, "clacks.db"))
+	st, err := record.Open(t.Context(), filepath.Join(dir, "clacks.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,20 +52,21 @@ func newMachine(t *testing.T, srvURL, token string, key [32]byte, name string) *
 		Client:  client.New(srvURL, token, false),
 		Sources: []source.Source{src},
 	}
+
 	return &machine{host: host, store: st, opDB: opDB, session: sess}
 }
 
-func execOp(t *testing.T, opDB, q string, args ...any) {
+func execOp(t *testing.T, opDB, q string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", opDB+"?cache=shared")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	if _, err := db.Exec("PRAGMA busy_timeout=5000;"); err != nil {
+	defer func() { _ = db.Close() }()
+	if _, err := db.ExecContext(t.Context(), "PRAGMA busy_timeout=5000;"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(q, args...); err != nil {
+	if _, err := db.ExecContext(t.Context(), q); err != nil {
 		t.Fatalf("%s: %v", q, err)
 	}
 }
@@ -76,11 +77,12 @@ func countOp(t *testing.T, opDB, q string, args ...any) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var n int
-	if err := db.QueryRow(q, args...).Scan(&n); err != nil {
+	if err := db.QueryRowContext(t.Context(), q, args...).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
+
 	return n
 }
 
@@ -90,18 +92,19 @@ func queryOp(t *testing.T, opDB, q string, args ...any) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	var s string
-	if err := db.QueryRow(q, args...).Scan(&s); err != nil {
+	if err := db.QueryRowContext(t.Context(), q, args...).Scan(&s); err != nil {
 		t.Fatal(err)
 	}
+
 	return s
 }
 
 func TestEndToEnd(t *testing.T) {
 	ctx := context.Background()
 	// In-process server.
-	st, err := server.Open(filepath.Join(t.TempDir(), "srv.db"))
+	st, err := server.Open(t.Context(), filepath.Join(t.TempDir(), "srv.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +114,7 @@ func TestEndToEnd(t *testing.T) {
 	defer ts.Close()
 
 	c := client.New(ts.URL, "", false)
-	tok, err := c.Register("alice", "secret")
+	tok, err := c.Register(t.Context(), "alice", "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,8 +156,8 @@ func TestEndToEnd(t *testing.T) {
 	// B to A: add a message on B, sync B then A.
 	execOp(t, b.opDB, `INSERT INTO message(id, session_id, time_created, time_updated, data) VALUES('msg_2','ses_1',2,200,'{}')`)
 	execOp(t, b.opDB, `UPDATE session SET time_updated=200 WHERE id='ses_1'`)
-	na, _ := a.store.Count()
-	nb, _ := b.store.Count()
+	na, _ := a.store.Count(ctx)
+	nb, _ := b.store.Count(ctx)
 	if err := b.session.Sync(ctx); err != nil {
 		t.Fatalf("sync B2: %v", err)
 	}
@@ -174,8 +177,8 @@ func TestEndToEnd(t *testing.T) {
 	if got := countOp(t, a.opDB, `SELECT COUNT(*) FROM message WHERE session_id='ses_1'`); got != 2 {
 		t.Fatalf("dup messages after resync: %d", got)
 	}
-	na2, _ := a.store.Count()
-	nb2, _ := b.store.Count()
+	na2, _ := a.store.Count(ctx)
+	nb2, _ := b.store.Count(ctx)
 	// Record counts may grow by at most the apply-side scan records (should be
 	// stable: each side already has everything).
 	if na2 < na || nb2 < nb {

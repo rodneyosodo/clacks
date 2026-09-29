@@ -12,11 +12,12 @@ import (
 
 func testServer(t *testing.T) *Server {
 	t.Helper()
-	st, err := Open(t.TempDir() + "/srv.db")
+	st, err := Open(t.Context(), t.TempDir()+"/srv.db")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
+
 	return New(st)
 }
 
@@ -24,17 +25,21 @@ func doReq(t *testing.T, srv *Server, method, path string, body any, token strin
 	t.Helper()
 	var rdr *bytes.Reader
 	if body != nil {
-		raw, _ := json.Marshal(body)
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
 		rdr = bytes.NewReader(raw)
 	} else {
 		rdr = bytes.NewReader(nil)
 	}
-	req := httptest.NewRequest(method, path, rdr)
+	req := httptest.NewRequestWithContext(t.Context(), method, path, rdr)
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
+
 	return rec
 }
 
@@ -46,6 +51,7 @@ func register(t *testing.T, srv *Server) string {
 	}
 	var out map[string]string
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+
 	return out["token"]
 }
 

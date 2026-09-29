@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"os"
 	"path/filepath"
@@ -39,7 +40,7 @@ type Store struct {
 }
 
 // Open creates/opens the server SQLite store.
-func Open(path string) (*Store, error) {
+func Open(ctx context.Context, path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -48,14 +49,17 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;"); err != nil {
-		db.Close()
+	if _, err := db.ExecContext(ctx, "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;"); err != nil {
+		_ = db.Close()
+
 		return nil, err
 	}
-	if _, err := db.Exec(schema); err != nil {
-		db.Close()
+	if _, err := db.ExecContext(ctx, schema); err != nil {
+		_ = db.Close()
+
 		return nil, err
 	}
+
 	return &Store{db: db, path: path}, nil
 }
 
