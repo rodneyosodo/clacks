@@ -1,160 +1,138 @@
 # clacks
 
-Encrypted, self-hosted sync for AI coding sessions — opencode first.
+Encrypted, self-hosted sync for AI coding sessions. Start a session in [opencode](https://opencode.ai) on your laptop, walk into the office, and pick up the same session on the desktop.
 
-Sessions live in opencode's SQLite database (`~/.local/share/opencode/opencode.db`),
-which is stuck on the machine where it was created. clacks is a single Go binary
-with a self-hostable `clacks server` that stores only encrypted records, plus a
-client that pushes local changes and pulls remote ones. A session started on
-machine A can be opened and continued in opencode on machine B. The design leaves
-room for Claude Code and other tools later via the `Source` interface.
+opencode keeps sessions in a local SQLite database, so they never leave the machine they were created on. clacks watches that database, encrypts the changes, and syncs them through a server you control. The server stores only ciphertext — it never sees your conversations.
 
-## How it works
+## Requirements
 
-- **Records**: `id` (UUIDv7), `host` (UUIDv7 per machine),
-  `tag` (e.g. `opencode`), `idx` (sequence per host+tag), `version`, `timestamp`,
-  `data`. Payloads are batches of row changes (`{table, pk, time_updated, columns}`)
-  cut at ~1 MB / 500 rows, zstd-compressed, then encrypted with XChaCha20-Poly1305
-  (AAD = `id|host|tag|idx`). The server never sees plaintext.
-- **Sync loop** (`clacks sync`): scan local changes into new records under this
-  host, diff local vs remote status per `(host, tag)` into an
-  `Upload` / `Download` / `Noop` decision, upload/download the gap, then apply
-  records from other hosts past the `applied_idx` cursor through the source.
-- **opencode adapter**: change detection without new indexes (dirty sessions via
-  `session.time_updated`, children through existing `message_session_*`,
-  `part_session_idx`, `todo_session_idx` indexes), newer-`time_updated`-wins
-  upserts in FK order, column intersection via `PRAGMA table_info` for schema
-  drift, `path_map` rewriting of `session.directory` / `project.worktree`
-  (remote `$HOME` → local `$HOME` by default), opt-in delete propagation.
+- **opencode 1.18.x.** clacks reads the v1 schema (`session`, `message`, `part`, `todo`). opencode 2.x renamed these to `session_v2` and `session_message`, so **every machine must run the same major version** — sessions synced into a v2 opencode simply won't appear.
+- A Go toolchain (1.26+) to build, or a release binary.
+- A machine to host the server. It can be a VPS, a NAS, or a laptop.
 
-## Quickstart
+## Install
 
 ```sh
-# 1. Build / install
-go build -o bin/clacks ./cmd/clacks
-
-# 2. Start a server (self-hosted; default :8080, SQLite store)
-clacks server start --listen :8080 --db ~/.local/share/clacks/server.db
-
-# 3. On machine A: point at the server, register, sync (limit history!)
-clacks register --username alice --password '...'
-clacks sync --since 2026-01-01
-
-# 4. Copy the key to machine B
-clacks key   # BIP39 mnemonic — keep it secret
-
-# 5. On machine B: same server address in ~/.config/clacks/config.toml,
-#    set CLACKS_KEY to the mnemonic (or paste into the key file), then:
-clacks login --username alice --password '...'
-clacks sync --since 2026-01-01
-clacks status
+go build -o bin/clacks ./cmd/clacks   # or: make build
 ```
 
-Config lives at `~/.config/clacks/config.toml`:
+## Quick start
+
+### 1. Start a server
+
+Anywhere reachable, on the default port:
+
+```sh
+clacks server start --listen :8080 --db ~/.local/share/clacks/server.db
+```
+
+Put it behind TLS (a tunnel works) and set `sync_address` in the config to that URL. If you use a self-signed cert or a minimal container.
+
+### 2. Connect machine A
+
+```sh
+clacks register --username you --password '...'
+clacks sync --since 2026-01-01
+```
+
+`--since` limits how far back the first upload reaches. Without it, clacks tries to push your entire history — on a real install that is a lot. Start with a recent date and widen it if you need more.
+
+### 3. Get the key
+
+```sh
+clacks key
+```
+
+This prints a 24-word mnemonic that decrypts everything on the server. Anyone with it can read your sessions. On machine B, save it as `~/.local/share/clacks/key` (or export `CLACKS_KEY`).
+
+### 4. Connect machine B
+
+Point `sync_address` at the same server, save the key, then:
+
+```sh
+clacks login --username you --password '...'
+clacks sync
+clacks opencode sessions
+```
+
+Sessions should now appear in opencode on machine B. If opencode is already running there, restart it.
+
+### 5. Keep it in sync
+
+```sh
+clacks daemon
+```
+
+Or run it on a timer — see [`contrib/clacks.service`](contrib/clacks.service) for a systemd user unit.
+
+## Commands
+
+| Command                                     | What it does                                |
+| ------------------------------------------- | ------------------------------------------- |
+| `clacks register --username U --password P` | Create an account on the server             |
+| `clacks login --username U --password P`    | Get a token for an existing account         |
+| `clacks logout`                             | Forget the stored token                     |
+| `clacks key`                                | Print the sync mnemonic for another machine |
+| `clacks sync [--since DATE] [--force]`      | Push local changes, pull remote ones        |
+| `clacks status`                             | Show what is where, per machine             |
+| `clacks opencode sessions`                  | List sessions and whether each has synced   |
+| `clacks daemon`                             | Sync on a timer                             |
+| `clacks server start`                       | Run the sync server                         |
+| `clacks version`                            | Show the build                              |
+
+Global flags: `--log-level debug\|info\|warn\|error`, `--insecure` (skip TLS verification).
+
+## Configuration
+
+`~/.config/clacks/config.toml`:
 
 ```toml
-sync_address = "http://myserver:8080"
-sync_frequency = "5m"
-# Skip TLS verification (ngrok/cloudflared tunnels, self-signed certs,
-# minimal containers without a CA bundle). Also: `clacks --insecure ...`
-# or `CLACKS_INSECURE=1`. Only on networks you trust.
-insecure_skip_verify = false
+sync_address = "https://sync.example.com"
+sync_frequency = "5m"          # used by `clacks daemon`
+insecure_skip_verify = false   # only for self-signed certs
 
 [sources.opencode]
 enabled = true
-propagate_deletes = false   # off by default
+path = ""                      # defaults to opencode's own location
+propagate_deletes = false      # off by default
 
+# Rewrite absolute paths from one machine's home to another. The remote $HOME
+# is mapped to the local $HOME automatically; use this for anything else.
 [[path_map]]
-from = "/home/alice"
-to = "/home/bob"
+from = "/Users/alice"
+to = "/home/alice"
 ```
 
-Useful env overrides: `CLACKS_HOME` (data dir: holds `clacks.db` and `key`),
-`CLACKS_CONFIG_HOME` (config dir: holds `config.toml`), `CLACKS_CONFIG` (exact
-config file), `XDG_DATA_HOME` / `XDG_CONFIG_HOME` (machine-B isolation:
-`XDG_DATA_HOME=/tmp/b clacks sync`), `OPENCODE_DB`, `CLACKS_KEY` (mnemonic),
-`CLACKS_DB`, `CLACKS_KEY_FILE`.
-`CLACKS_INSECURE=1` / `clacks --insecure` skips TLS verification for one run
-without editing the config.
+Useful environment variables:
 
-## Logging
+| Variable             | Purpose                                   |
+| -------------------- | ----------------------------------------- |
+| `CLACKS_KEY`         | The mnemonic, instead of the key file     |
+| `OPENCODE_DB`        | Path to `opencode.db`, if not the default |
+| `CLACKS_HOME`        | Data directory (record store + key)       |
+| `CLACKS_CONFIG_HOME` | Config directory                          |
+| `XDG_DATA_HOME`      | Also relocates opencode's database        |
+| `CLACKS_INSECURE`    | `1` to skip TLS verification for one run  |
 
-The client speaks to a person, the server to a log pipeline, so they log
-differently. Both go through `log/slog`.
+`CLACKS_HOME` and `XDG_DATA_HOME` are how you test machine B without touching your real install: `XDG_DATA_HOME=/tmp/b clacks sync`.
 
-- **CLI**: one plain line per record on stderr — no timestamps, no level
-  prefixes, no quoted error blobs. Command results stay on stdout, so
-  `clacks status | grep ses_` and `clacks key > key.txt` keep working.
-- **Server**: JSON on stdout, ready for collection.
-
-Set the level with `--log-level debug|info|warn|error` or `CLACKS_LOG_LEVEL`:
+## Docker
 
 ```sh
-$ clacks status
-local:
-  01a0cec6-... opencode 3097
-remote status: dial tcp [::1]:8080: connect: connection refused
-
-$ clacks --log-level debug sync
-syncing opencode_db=/root/.local/share/opencode/opencode.db force=false
-scanned local changes tag=opencode changes=2
-uploading host=01a0cccc-... tag=opencode
-sync complete
-
-$ clacks server start
-{"time":"...","level":"INFO","msg":"server listening","addr":":8080","db":"..."}
+make docker                                    # ghcr.io/rodneyosodo/clacks:latest
+export CLACKS_UID=$(id -u) CLACKS_GID=$(id -g) # so the client owns your files
+cp docker/config.example.toml docker/config/config.toml
+make compose-up                                # server only
+make compose-up --profile client               # server + a syncing client
 ```
 
-## TLS errors (`x509: certificate signed by unknown authority`)
+Each build is tagged with the version and `latest`. To publish, `docker login ghcr.io` then `make docker-push`.
 
-Both ngrok and Cloudflare tunnels use publicly-trusted CAs, so this error on
-both means the *client* machine can't verify anything — typically a minimal
-container without a CA bundle. In order:
+Compose runs prebuilt images, so build or pull one first. The client is pinned to your uid so it can read and write your `opencode.db`; its state stays visible on the host in `.clacks-data/`. Full details in [docker/README.md](docker/README.md).
 
-1. **Fix the CA store (proper fix):** `apt-get update && apt-get install -y
-   ca-certificates`, then retry. Confirm the bundle exists:
-   `ls -la /etc/ssl/certs/ca-certificates.crt` (a dangling symlink is the
-   classic symptom).
-2. **Skip verification (escape hatch):** `clacks --insecure login ...`, or set
-   `insecure_skip_verify = true` in config, or `CLACKS_INSECURE=1`. A warning
-   is printed every run. Only on networks you trust.
-
-## Sync errors
-
-- `database not found at ...` / `not initialised (missing table "session")`:
-  clacks is looking at the wrong file. opencode uses **per-channel**
-  filenames — non-`latest`/`beta` installs write to
-  `opencode-<channel>.db`, and `OPENCODE_DB` relocates it entirely. Find the
-  live one with `opencode debug paths db` (or `ls ~/.local/share/opencode/`),
-  then set it as `[sources.opencode] path`. clacks also names any
-  `opencode*.db` siblings in the error itself.
-
-## CLI
-
-- `clacks register | login | logout` — account + token management
-- `clacks key` — print the sync mnemonic for the second machine
-- `clacks sync [--force] [--since DATE]` — push + pull (`--since` as RFC3339
-  or `YYYY-MM-DD`; `--force` re-emits all local rows)
-- `clacks status` — local and remote status per host/tag
-- `clacks opencode sessions` — sessions with sync state
-- `clacks daemon` — sync every `sync_frequency` (systemd unit in `contrib/`)
-- `clacks server start` — run the sync server
-
-## Verification
+## Development
 
 ```sh
-go test ./...   # unit + e2e (in-process server, two temp machines)
+make check   # fmt, vet, lint, test
+go test ./... # unit + end-to-end (in-process server, two machines)
 ```
-
-End-to-end covers A→B session/message/part/todo sync, B→A message sync with
-no duplicates on re-sync, and newer-`time_updated`-wins conflicts (see `e2e/`).
-Manual check against a real `opencode.db`: sync read-only with `--since` recent
-from machine A, sync into an empty `XDG_DATA_HOME` on B, then diff
-`opencode export <id>` output between the two.
-
-## Limitations (v1)
-
-- `snapshot/` git snapshots and `tool-output/` are not synced.
-- A running opencode TUI may need a restart before synced sessions show up.
-- Deletes are off by default (`sources.opencode.propagate_deletes`).
-- No CGO: storage uses `modernc.org/sqlite`.

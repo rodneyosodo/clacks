@@ -1,0 +1,10 @@
+# Applies to docker/Dockerfile.dev only.
+#
+# The dev image bakes in a binary you already built (`make build`), so this one
+# file is the only thing it needs from the build context. The top-level
+# .dockerignore excludes bin/ on purpose, because the main Dockerfile compiles
+# from source inside the container.
+*
+
+!bin/clacks
+!docker/entrypoint.sh

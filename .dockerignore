@@ -1,0 +1,23 @@
+# Keep the build context small and secrets out of the image.
+.git
+.gitignore
+.github
+
+# Built artefacts
+bin/
+
+# Local state: never bake someone's session data or sync key into an image
+data/
+config/
+*.db
+*.db-wal
+*.db-shm
+key
+
+# docker/ itself is needed (Dockerfile + entrypoint), but its config dir holds
+# tokens and must never land in a layer.
+docker/config/
+
+# Docs and local scratch
+*.md
+LICENSE

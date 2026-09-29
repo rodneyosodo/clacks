@@ -1,0 +1,22 @@
+# Example config for a containerised clacks client.
+#
+# Copy to docker/config/config.toml, then register or log in to fill in the
+# token:
+#
+#   cp docker/config.example.toml docker/config/config.toml
+#   docker compose -f docker/compose.yaml up -d
+#   docker compose -f docker/compose.yaml run --rm clacks-client register \
+#       --username you --password 'your-password'
+#
+# sync_address must be the compose service name, not localhost: inside the
+# container, localhost is the container itself. For a server reached from the
+# host, use http://localhost:8080 instead.
+
+sync_address = "http://clacks-server:8080"
+sync_frequency = "5m"
+
+[sources.opencode]
+enabled = true
+# Set by the compose file to /opencode/opencode.db (the mounted host DB).
+path = ""
+propagate_deletes = false

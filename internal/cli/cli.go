@@ -31,7 +31,7 @@ var insecureFlag bool
 var logLevel string
 
 // RootCmd builds the cobra root.
-func RootCmd() *cobra.Command {
+func RootCmd(bi BuildInfo) *cobra.Command {
 	root := &cobra.Command{
 		Use:           "clacks",
 		Short:         "encrypted sync for AI coding sessions",
@@ -46,7 +46,7 @@ func RootCmd() *cobra.Command {
 	}
 	root.PersistentFlags().BoolVar(&insecureFlag, "insecure", false, "skip TLS certificate verification (tunnels/self-signed only, never on untrusted networks)")
 	root.PersistentFlags().StringVar(&logLevel, "log-level", "", "log level: debug, info, warn, error (or $CLACKS_LOG_LEVEL)")
-	root.AddCommand(registerCmd(), loginCmd(), logoutCmd(), keyCmd(), syncCmd(), statusCmd(), opencodeCmd(), daemonCmd(), serverCmd())
+	root.AddCommand(registerCmd(), loginCmd(), logoutCmd(), keyCmd(), syncCmd(), statusCmd(), opencodeCmd(), daemonCmd(), serverCmd(), versionCmd(bi))
 
 	return root
 }

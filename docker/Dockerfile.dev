@@ -1,0 +1,24 @@
+# Fast iteration: bakes in a binary you already built with `make build`.
+#   make build && make docker-dev
+FROM alpine:3.24
+
+ARG BINARY=bin/clacks
+
+RUN apk add --no-cache ca-certificates tzdata su-exec \
+    && adduser -D -u 10001 clacks
+
+COPY ${BINARY} /usr/local/bin/clacks
+COPY docker/entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+# See Dockerfile: privileges are dropped by the entrypoint, not by USER.
+
+ENV CLACKS_HOME=/data \
+    CLACKS_CONFIG_HOME=/config
+
+VOLUME ["/data", "/config"]
+
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+CMD ["server", "start", "--listen", ":8080", "--db", "/data/server.db"]
