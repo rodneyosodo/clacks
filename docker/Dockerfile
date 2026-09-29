@@ -31,6 +31,8 @@ RUN CGO_ENABLED=${CGO_ENABLED} GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -o /clacks ./cmd/clacks
 
 FROM alpine:3.24
+LABEL org.opencontainers.image.source=https://github.com/rodneyosodo/clacks
+LABEL org.opencontainers.image.licenses=MIT
 
 RUN apk add --no-cache ca-certificates tzdata wget su-exec \
     && adduser -D -u 10001 clacks

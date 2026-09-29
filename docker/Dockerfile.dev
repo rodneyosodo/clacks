@@ -1,6 +1,8 @@
 # Fast iteration: bakes in a binary you already built with `make build`.
 #   make build && make docker-dev
 FROM alpine:3.24
+LABEL org.opencontainers.image.source=https://github.com/rodneyosodo/clacks
+LABEL org.opencontainers.image.licenses=MIT
 
 ARG BINARY=bin/clacks
 
