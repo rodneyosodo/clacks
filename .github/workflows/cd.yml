@@ -123,6 +123,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
