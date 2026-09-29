@@ -138,7 +138,7 @@ make compose-up                                # server only
 make compose-up --profile client               # server + a syncing client
 ```
 
-Each build is tagged with the version and `latest`. To publish, `docker login ghcr.io` then `make docker-push`.
+`make docker` builds for the current platform and tags it with the version and `latest`; `make docker-push` publishes both. CI is stricter: it pushes `latest` on every build, and adds the version tag (`v1.2.3`) only for tagged releases, so a branch build never overwrites a published version.
 
 Compose runs prebuilt images, so build or pull one first. The client is pinned to your uid so it can read and write your `opencode.db`; its state stays visible on the host in `.clacks-data/`. Full details in [docker/README.md](docker/README.md).
 

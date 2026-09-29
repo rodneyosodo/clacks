@@ -60,11 +60,10 @@ jobs:
           META_IMAGE: ${{ steps.meta.outputs.image }}
         run: |
           set -euo pipefail
-          # Branch builds get the commit sha, tag builds the version.
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            second="${META_IMAGE}:${GITHUB_REF_NAME}"
+            tags="${META_IMAGE}:latest,${META_IMAGE}:${GITHUB_REF_NAME}"
           else
-            second="${META_IMAGE}:${META_COMMIT}"
+            tags="${META_IMAGE}:latest"
           fi
           make docker-buildx \
             DOCKER_IMAGE="${META_IMAGE}" \
@@ -72,7 +71,7 @@ jobs:
             COMMIT="${META_COMMIT}" \
             COMMIT_TIME="${META_COMMIT_TIME}" \
             TIME="${META_TIME}" \
-            TAGS="${META_IMAGE}:latest,${META_IMAGE}:${META_VERSION},${second}" \
+            TAGS="${tags}" \
             DOCKER_PUSH=true
 
   build-binaries:

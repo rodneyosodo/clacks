@@ -3,7 +3,7 @@
 ## Build and publish an image
 
 ```sh
-make docker      # ghcr.io/rodneyosodo/clacks:<version>, :<commit> and :latest
+make docker      # ghcr.io/rodneyosodo/clacks:<version> and :latest
 ```
 
 Images are named `$(DOCKER_IMAGE_NAME_PREFIX)/$(BINARY):$(VERSION)`, with the prefix defaulting to `ghcr.io/rodneyosodo`. Point it elsewhere with:
@@ -12,15 +12,16 @@ Images are named `$(DOCKER_IMAGE_NAME_PREFIX)/$(BINARY):$(VERSION)`, with the pr
 DOCKER_IMAGE_NAME_PREFIX=my-registry.io/team make docker
 ```
 
-Every build carries two tags: the release version and `latest`. To publish,
-log in to the registry first, then:
+`make docker` tags the build with the version and `latest`, and `make docker-push` publishes both. To publish, log in to the registry first, then:
 
 ```sh
 docker login ghcr.io     # or: echo "$GHCR_TOKEN" | docker login ghcr.io -u USER --password-stdin
-make docker-push         # builds, then pushes all three tags
+make docker-push
 ```
 
-The push stops at the first failure, so `latest` is never published if the version push failed. To push something already built, use `docker push <image>:<tag>` directly.
+CI is stricter: it pushes `latest` on every build, and adds the version tag only for tagged releases, so a branch build never overwrites a published version.
+
+To push something already built, use `docker push <image>:<tag>` directly.
 
 For a faster inner loop, build the binary on the host and bake it in:
 
