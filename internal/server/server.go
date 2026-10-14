@@ -38,8 +38,8 @@ func New(store *Store) *Server {
 	return s
 }
 
-// Handler returns the HTTP handler.
-func (s *Server) Handler() http.Handler { return s.mux }
+// Handler returns the HTTP handler, wrapped in request logging.
+func (s *Server) Handler() http.Handler { return requestLog(s.mux) }
 
 type credentials struct {
 	Username string `json:"username"`
@@ -83,6 +83,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = s.store.db.ExecContext(r.Context(), `INSERT INTO users(username, password_hash) VALUES(?,?)`, c.Username, hash)
 	if err != nil {
+		slog.Warn("register failed", slog.String("reason", "username taken"), slog.String("user", c.Username))
 		writeErr(w, 409, "username taken")
 
 		return
@@ -93,6 +94,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	slog.Info("register", slog.String("user", c.Username))
 	writeJSON(w, 200, map[string]string{"token": tok})
 }
 
@@ -106,11 +108,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var hash []byte
 	err := s.store.db.QueryRowContext(r.Context(), `SELECT password_hash FROM users WHERE username=?`, c.Username).Scan(&hash)
 	if err != nil {
+		slog.Warn("login failed", slog.String("reason", "unknown user"), slog.String("user", c.Username))
 		writeErr(w, 401, "invalid credentials")
 
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword(hash, []byte(c.Password)); err != nil {
+		slog.Warn("login failed", slog.String("reason", "bad password"), slog.String("user", c.Username))
 		writeErr(w, 401, "invalid credentials")
 
 		return
@@ -121,6 +125,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	slog.Info("login", slog.String("user", c.Username))
 	writeJSON(w, 200, map[string]string{"token": tok})
 }
 
@@ -202,6 +207,9 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	if len(recs) > 0 {
+		slog.Info("upload", slog.String("user", user), slog.String("host", recs[0].Host), slog.String("tag", recs[0].Tag), slog.Int("count", len(recs)))
+	}
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
@@ -274,6 +282,7 @@ func (s *Server) handleWipe(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	slog.Warn("wipe", slog.String("user", user))
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 

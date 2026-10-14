@@ -81,6 +81,8 @@ Anywhere reachable, on the default port:
 clacks server start --listen :8080 --db ~/.local/share/clacks/server.db
 ```
 
+The server logs JSON to stdout (one object per line), ready for a log pipeline. Every request emits an access line — `method`, `path`, `status`, `duration`, `bytes`, `remote` and, when authenticated, `user` — plus events for auth rejections, register/login, uploads and wipes. Raise the level with `--log-level debug` and lower the noise with `--log-level warn`; liveness probes on `/healthz` are never logged.
+
 Put it behind TLS (a tunnel works) and set `sync_address` in the config to that URL. If you use a self-signed cert or a minimal container.
 
 ### 2. Connect machine A
