@@ -154,14 +154,21 @@ func buildSession(cfg *config.Config, key [32]byte, store *record.Store) *syncpk
 }
 
 // authCmd builds register/login, which differ only in the client call.
+//
+// Credentials may come from any of three sources, in precedence order:
+// `--username`/`--password` flags, positional args (`clacks login U P`), or an
+// interactive prompt when a value is still missing. The password prompt disables
+// echo, so it never appears on the terminal.
 func authCmd(use, short, done string, call func(context.Context, *client.Client, string, string) (string, error)) *cobra.Command {
 	var username, password string
 	cmd := &cobra.Command{
-		Use:   use,
+		Use:   use + " [username] [password]",
 		Short: short,
+		Args:  cobra.MaximumNArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
-			if username == "" || password == "" {
-				fail(fmt.Errorf("%s --username U --password P", use))
+			username, password, err := resolveCredentials(username, password, args, newPrompter(cmd.InOrStdin(), cmd.OutOrStdout()))
+			if err != nil {
+				fail(err)
 			}
 			cfg := mustConfig()
 			c := client.New(cfg.SyncAddress, "", cfg.InsecureSkipVerify)
@@ -176,8 +183,8 @@ func authCmd(use, short, done string, call func(context.Context, *client.Client,
 			fmt.Fprintln(cmd.OutOrStdout(), done)
 		},
 	}
-	cmd.Flags().StringVar(&username, "username", "", "username")
-	cmd.Flags().StringVar(&password, "password", "", "password")
+	cmd.Flags().StringVar(&username, "username", "", "username (or first positional arg)")
+	cmd.Flags().StringVar(&password, "password", "", "password (or second positional arg)")
 
 	return cmd
 }
