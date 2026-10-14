@@ -120,7 +120,7 @@ func TestEndToEnd(t *testing.T) {
 	defer ts.Close()
 
 	c := client.New(ts.URL, "", false)
-	tok, err := c.Register(t.Context(), "alice", "secret")
+	tok, err := c.Register(t.Context(), "alice", "secret123")
 	if err != nil {
 		t.Fatal(err)
 	}

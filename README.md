@@ -130,13 +130,15 @@ Or run it on a timer — see [`contrib/clacks.service`](contrib/clacks.service) 
 | ------------------------------------------- | ------------------------------------------- |
 | `clacks register --username U --password P` | Create an account on the server             |
 | `clacks login --username U --password P`    | Get a token for an existing account         |
-| `clacks logout`                             | Forget the stored token                     |
+| `clacks logout`                             | Revoke the token and clear it               |
+| `clacks passwd`                             | Change your password (logs out other sessions) |
 | `clacks key`                                | Print the sync mnemonic for another machine |
 | `clacks sync [--since DATE] [--force]`      | Push local changes, pull remote ones        |
 | `clacks status`                             | Show what is where, per machine             |
 | `clacks opencode sessions`                  | List sessions and whether each has synced   |
 | `clacks daemon`                             | Sync on a timer                             |
 | `clacks server start`                       | Run the sync server                         |
+| `clacks server reset-password --username U` | Reset a forgotten password (revokes all tokens) |
 | `clacks version`                            | Show the build                              |
 
 Global flags: `--log-level debug\|info\|warn\|error`, `--insecure` (skip TLS verification).

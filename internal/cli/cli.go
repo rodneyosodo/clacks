@@ -46,7 +46,7 @@ func RootCmd(bi BuildInfo) *cobra.Command {
 	}
 	root.PersistentFlags().BoolVar(&insecureFlag, "insecure", false, "skip TLS certificate verification (tunnels/self-signed only, never on untrusted networks)")
 	root.PersistentFlags().StringVar(&logLevel, "log-level", "", "log level: debug, info, warn, error (or $CLACKS_LOG_LEVEL)")
-	root.AddCommand(registerCmd(), loginCmd(), logoutCmd(), keyCmd(), syncCmd(), statusCmd(), opencodeCmd(), daemonCmd(), serverCmd(), versionCmd(bi))
+	root.AddCommand(registerCmd(), loginCmd(), logoutCmd(), passwdCmd(), keyCmd(), syncCmd(), statusCmd(), opencodeCmd(), daemonCmd(), serverCmd(), versionCmd(bi))
 
 	return root
 }
@@ -204,15 +204,62 @@ func loginCmd() *cobra.Command {
 }
 
 func logoutCmd() *cobra.Command {
-	return &cobra.Command{Use: "logout", Short: "Clear the stored token",
+	return &cobra.Command{Use: "logout", Short: "Revoke the token and clear it",
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg := mustConfig()
+			if cfg.Token != "" {
+				// Best effort: even if the server is unreachable, clear the
+				// local token so the credential is not reused.
+				if err := client.New(cfg.SyncAddress, cfg.Token, cfg.InsecureSkipVerify).Logout(cmd.Context()); err != nil {
+					slog.Warn("server logout failed, clearing local token anyway", slog.Any("error", err))
+				}
+			}
 			cfg.Token = ""
 			if err := config.Save(cfg); err != nil {
 				fail(fmt.Errorf("save config: %w", err))
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "logged out")
 		}}
+}
+
+// passwdCmd changes the password of the logged-in account. It mirrors login:
+// the current and new passwords may be given as flags or prompted for, and the
+// prompts disable echo. Changing the password revokes every other session.
+func passwdCmd() *cobra.Command {
+	var oldPassword, newPassword string
+	cmd := &cobra.Command{Use: "passwd", Short: "Change your password (revokes other sessions)",
+		Run: func(cmd *cobra.Command, args []string) {
+			cfg := mustConfig()
+			if cfg.Token == "" {
+				fail(errors.New("not logged in"))
+			}
+			prompt := newPrompter(cmd.InOrStdin(), cmd.OutOrStdout())
+			var err error
+			if oldPassword == "" {
+				oldPassword, err = prompt("Current password", true)
+				if err != nil {
+					fail(fmt.Errorf("read current password: %w", err))
+				}
+			}
+			if newPassword == "" {
+				newPassword, err = prompt("New password", true)
+				if err != nil {
+					fail(fmt.Errorf("read new password: %w", err))
+				}
+			}
+			if oldPassword == "" || newPassword == "" {
+				fail(errors.New("current and new password required"))
+			}
+			c := client.New(cfg.SyncAddress, cfg.Token, cfg.InsecureSkipVerify)
+			if err := c.ChangePassword(cmd.Context(), oldPassword, newPassword); err != nil {
+				fail(fmt.Errorf("passwd: %w", err))
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "password changed (other sessions logged out)")
+		}}
+	cmd.Flags().StringVar(&oldPassword, "old-password", "", "current password")
+	cmd.Flags().StringVar(&newPassword, "new-password", "", "new password")
+
+	return cmd
 }
 
 func keyCmd() *cobra.Command {
@@ -394,6 +441,54 @@ func serverCmd() *cobra.Command {
 	start.Flags().String("listen", ":8080", "listen address")
 	start.Flags().String("db", "", "server db path")
 	cmd.AddCommand(start)
+
+	reset := &cobra.Command{Use: "reset-password", Short: "Reset a user's password (revokes all their tokens)",
+		Run: func(cmd *cobra.Command, args []string) {
+			username, _ := cmd.Flags().GetString("username")
+			password, _ := cmd.Flags().GetString("password")
+			dbPath, _ := cmd.Flags().GetString("db")
+			if dbPath == "" {
+				dbPath = paths.ClacksHome() + "/server.db"
+			}
+			prompt := newPrompter(cmd.InOrStdin(), cmd.OutOrStdout())
+			var err error
+			if username == "" {
+				username, err = prompt("Username", false)
+				if err != nil {
+					fail(fmt.Errorf("read username: %w", err))
+				}
+			}
+			if password == "" {
+				password, err = prompt("New password", true)
+				if err != nil {
+					fail(fmt.Errorf("read new password: %w", err))
+				}
+			}
+			if username == "" || password == "" {
+				fail(errors.New("username and password required"))
+			}
+			if len(password) < 8 {
+				fail(errors.New("password too short (min 8 characters)"))
+			}
+			st, err := server.Open(cmd.Context(), dbPath)
+			if err != nil {
+				fail(fmt.Errorf("server store: %w", err))
+			}
+			defer func() { _ = st.Close() }()
+			ok, err := st.ResetPassword(cmd.Context(), username, password)
+			if err != nil {
+				fail(fmt.Errorf("reset: %w", err))
+			}
+			if !ok {
+				fail(fmt.Errorf("no such user %q", username))
+			}
+			slog.Info("password reset", slog.String("user", username))
+			fmt.Fprintln(cmd.OutOrStdout(), "password reset; all tokens revoked")
+		}}
+	reset.Flags().String("username", "", "username")
+	reset.Flags().String("password", "", "new password (prompted if omitted)")
+	reset.Flags().String("db", "", "server db path")
+	cmd.AddCommand(reset)
 
 	return cmd
 }

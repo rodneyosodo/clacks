@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"golang.org/x/crypto/bcrypt"
 	_ "modernc.org/sqlite"
 )
 
@@ -65,3 +66,30 @@ func Open(ctx context.Context, path string) (*Store, error) {
 
 // Close closes the store.
 func (s *Store) Close() error { return s.db.Close() }
+
+// ResetPassword sets a fresh bcrypt hash for username and revokes every token,
+// returning whether the user existed. It is the operator path for a forgotten
+// password (`clacks server reset-password`): out-of-band shell access stands
+// in for an email recovery flow on a self-hosted server.
+func (s *Store) ResetPassword(ctx context.Context, username, password string) (bool, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return false, err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash=? WHERE username=?`, hash, username)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return false, nil
+	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM tokens WHERE username=?`, username); err != nil {
+		return false, err
+	}
+
+	return true, nil
+}

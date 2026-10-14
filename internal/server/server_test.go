@@ -45,7 +45,7 @@ func doReq(t *testing.T, srv *Server, method, path string, body any, token strin
 
 func register(t *testing.T, srv *Server) string {
 	t.Helper()
-	rec := doReq(t, srv, "POST", "/register", map[string]string{"username": "u", "password": "p"}, "")
+	rec := doReq(t, srv, "POST", "/register", map[string]string{"username": "u", "password": "password1"}, "")
 	if rec.Code != 200 {
 		t.Fatalf("register %d: %s", rec.Code, rec.Body.String())
 	}
@@ -66,7 +66,7 @@ func TestAuth(t *testing.T) {
 		t.Fatalf("me %d: %s", rec.Code, rec.Body.String())
 	}
 	// Duplicate register rejected.
-	if rec := doReq(t, srv, "POST", "/register", map[string]string{"username": "u", "password": "p"}, ""); rec.Code != 409 {
+	if rec := doReq(t, srv, "POST", "/register", map[string]string{"username": "u", "password": "password1"}, ""); rec.Code != 409 {
 		t.Fatalf("want 409, got %d", rec.Code)
 	}
 	// Bad login rejected.

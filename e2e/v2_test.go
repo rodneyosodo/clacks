@@ -26,7 +26,7 @@ func TestThreeMachinesV2(t *testing.T) {
 	defer ts.Close()
 
 	c := client.New(ts.URL, "", false)
-	tok, err := c.Register(ctx, "alice", "secret")
+	tok, err := c.Register(ctx, "alice", "secret123")
 	if err != nil {
 		t.Fatal(err)
 	}

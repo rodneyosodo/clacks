@@ -23,7 +23,7 @@ func newTransferServer(t *testing.T) (string, string) {
 	ts := httptest.NewServer(server.New(st).Handler())
 	t.Cleanup(ts.Close)
 
-	tok, err := client.New(ts.URL, "", false).Register(t.Context(), "u", "p")
+	tok, err := client.New(ts.URL, "", false).Register(t.Context(), "u", "password1")
 	if err != nil {
 		t.Fatal(err)
 	}

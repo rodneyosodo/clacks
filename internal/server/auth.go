@@ -9,6 +9,10 @@ import (
 
 type ctxUserKey struct{}
 
+// ctxTokenKey carries the bearer token that authenticated the request, so
+// handlers can act on it (logout revokes it, password change keeps it).
+type ctxTokenKey struct{}
+
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tok := r.Header.Get("Authorization")
@@ -30,6 +34,8 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		if p, ok := r.Context().Value(logUserKey{}).(*string); ok {
 			*p = user
 		}
-		next(w, r.WithContext(context.WithValue(r.Context(), ctxUserKey{}, user)))
+		ctx := context.WithValue(r.Context(), ctxUserKey{}, user)
+		ctx = context.WithValue(ctx, ctxTokenKey{}, tok)
+		next(w, r.WithContext(ctx))
 	}
 }
