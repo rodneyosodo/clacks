@@ -165,19 +165,26 @@ const pageSize = 1000
 // handful of requests.
 const uploadMaxBytes = 8 << 20
 
-// transferConcurrency is how many pages may be in flight at once. Transfers
-// are the slow part of a sync when the server is remote, and pages are
-// disjoint idx ranges, so overlapping them is safe.
-const transferConcurrency = 4
+// uploadConcurrency is how many upload pages may be in flight at once. Uploads
+// are bandwidth-bound: overlapping large bodies on one link does not raise
+// throughput, it just splits the pipe and — on a slow uplink — pushes each
+// request past the reverse proxy's timeout, which is the connection-reset a
+// large first sync dies with. Upload sequentially.
+const uploadConcurrency = 1
+
+// downloadConcurrency is how many download pages may be in flight at once.
+// Downloads are small requests dominated by round-trip latency, so overlapping
+// them hides that latency.
+const downloadConcurrency = 4
 
 // nextPage fetches and moves one page. It reports the last idx it handled and
 // whether any pages remain.
 type nextPage func(ctx context.Context) (last uint64, more bool, err error)
 
-// runPages drives nextPage across transferConcurrency workers. The next start
-// idx is shared, so each worker claims a distinct range. It returns the first
-// error, cancelling the rest.
-func runPages(ctx context.Context, fn nextPage) error {
+// runPages drives nextPage across concurrency workers. The next start idx is
+// shared, so each worker claims a distinct range. It returns the first error,
+// cancelling the rest.
+func runPages(ctx context.Context, concurrency int, fn nextPage) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -195,7 +202,7 @@ func runPages(ctx context.Context, fn nextPage) error {
 		cancel()
 	}
 
-	for range transferConcurrency {
+	for range concurrency {
 		wg.Go(func() {
 			for {
 				if ctx.Err() != nil {
@@ -272,7 +279,7 @@ func (s *Session) upload(ctx context.Context, host, tag string, remote record.St
 		}
 	}
 
-	return runPages(ctx, func(ctx context.Context) (uint64, bool, error) {
+	return runPages(ctx, uploadConcurrency, func(ctx context.Context) (uint64, bool, error) {
 		group, more, err := claim()
 		if err != nil || len(group) == 0 {
 			return 0, false, err
@@ -301,7 +308,7 @@ func (s *Session) download(ctx context.Context, host, tag string, local record.S
 	var next atomic.Uint64
 	next.Store(start)
 
-	return runPages(ctx, func(ctx context.Context) (uint64, bool, error) {
+	return runPages(ctx, downloadConcurrency, func(ctx context.Context) (uint64, bool, error) {
 		from := next.Load()
 		if from > remoteMax {
 			return 0, false, nil
