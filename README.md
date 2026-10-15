@@ -122,7 +122,13 @@ The server holds one stream per machine, so sync is a mesh rather than a set of 
 clacks daemon
 ```
 
-Or run it on a timer — see [`contrib/clacks.service`](contrib/clacks.service) for a systemd user unit.
+On a systemd Linux machine, install it as a background user service and start it now:
+
+```sh
+clacks daemon install --enable
+```
+
+`clacks daemon install` writes a systemd user unit that points at the running binary, so it works no matter where `clacks` was installed. Remove it with `clacks daemon uninstall`. If you prefer to manage the unit yourself, see [`contrib/clacks.service`](contrib/clacks.service) for a reference.
 
 ## Commands
 
@@ -137,6 +143,8 @@ Or run it on a timer — see [`contrib/clacks.service`](contrib/clacks.service) 
 | `clacks status`                             | Show what is where, per machine             |
 | `clacks opencode sessions`                  | List sessions and whether each has synced   |
 | `clacks daemon`                             | Sync on a timer                             |
+| `clacks daemon install [--enable]`          | Install a systemd user unit for the daemon  |
+| `clacks daemon uninstall`                   | Remove the systemd user unit                |
 | `clacks server start`                       | Run the sync server                         |
 | `clacks server reset-password --username U` | Reset a forgotten password (revokes all tokens) |
 | `clacks version`                            | Show the build                              |
