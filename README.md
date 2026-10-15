@@ -39,7 +39,7 @@ tar -xzf clacks-linux-amd64.tar.gz
 sudo install -m755 clacks-linux-amd64 /usr/local/bin/clacks
 ```
 
-To pin a specific release, swap `latest` for its tag, e.g. `.../releases/download/v0.1.0/checksums.txt`.
+To pin a specific release, swap `latest` for its tag, e.g. `.../releases/download/v0.2.0/checksums.txt`.
 
 On Windows, download the `.zip`, then in PowerShell:
 
@@ -56,7 +56,7 @@ Needs Go 1.27 or newer. This builds from the default branch, so use an explicit 
 
 ```sh
 go install github.com/rodneyosodo/clacks/cmd/clacks@latest        # default branch
-go install github.com/rodneyosodo/clacks/cmd/clacks@v0.1.0       # a specific release
+go install github.com/rodneyosodo/clacks/cmd/clacks@v0.2.0       # a specific release
 ```
 
 `go install` drops the binary in `$(go env GOPATH)/bin`; make sure that is on your `PATH`.
@@ -132,22 +132,22 @@ clacks daemon install --enable
 
 ## Commands
 
-| Command                                     | What it does                                |
-| ------------------------------------------- | ------------------------------------------- |
-| `clacks register --username U --password P` | Create an account on the server             |
-| `clacks login --username U --password P`    | Get a token for an existing account         |
-| `clacks logout`                             | Revoke the token and clear it               |
-| `clacks passwd`                             | Change your password (logs out other sessions) |
-| `clacks key`                                | Print the sync mnemonic for another machine |
-| `clacks sync [--since DATE] [--force]`      | Push local changes, pull remote ones        |
-| `clacks status`                             | Show what is where, per machine             |
-| `clacks opencode sessions`                  | List sessions and whether each has synced   |
-| `clacks daemon`                             | Sync on a timer                             |
-| `clacks daemon install [--enable]`          | Install a systemd user unit for the daemon  |
-| `clacks daemon uninstall`                   | Remove the systemd user unit                |
-| `clacks server start`                       | Run the sync server                         |
+| Command                                     | What it does                                    |
+| ------------------------------------------- | ----------------------------------------------- |
+| `clacks register --username U --password P` | Create an account on the server                 |
+| `clacks login --username U --password P`    | Get a token for an existing account             |
+| `clacks logout`                             | Revoke the token and clear it                   |
+| `clacks passwd`                             | Change your password (logs out other sessions)  |
+| `clacks key`                                | Print the sync mnemonic for another machine     |
+| `clacks sync [--since DATE] [--force]`      | Push local changes, pull remote ones            |
+| `clacks status`                             | Show what is where, per machine                 |
+| `clacks opencode sessions`                  | List sessions and whether each has synced       |
+| `clacks daemon`                             | Sync on a timer                                 |
+| `clacks daemon install [--enable]`          | Install a systemd user unit for the daemon      |
+| `clacks daemon uninstall`                   | Remove the systemd user unit                    |
+| `clacks server start`                       | Run the sync server                             |
 | `clacks server reset-password --username U` | Reset a forgotten password (revokes all tokens) |
-| `clacks version`                            | Show the build                              |
+| `clacks version`                            | Show the build                                  |
 
 Global flags: `--log-level debug\|info\|warn\|error`, `--insecure` (skip TLS verification).
 
