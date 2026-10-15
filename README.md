@@ -39,7 +39,7 @@ tar -xzf clacks-linux-amd64.tar.gz
 sudo install -m755 clacks-linux-amd64 /usr/local/bin/clacks
 ```
 
-To pin a specific release, swap `latest` for its tag, e.g. `.../releases/download/v0.2.0/checksums.txt`.
+To pin a specific release, swap `latest` for its tag, e.g. `.../releases/download/v0.2.1/checksums.txt`.
 
 On Windows, download the `.zip`, then in PowerShell:
 
@@ -56,7 +56,7 @@ Needs Go 1.27 or newer. This builds from the default branch, so use an explicit 
 
 ```sh
 go install github.com/rodneyosodo/clacks/cmd/clacks@latest        # default branch
-go install github.com/rodneyosodo/clacks/cmd/clacks@v0.2.0       # a specific release
+go install github.com/rodneyosodo/clacks/cmd/clacks@v0.2.1       # a specific release
 ```
 
 `go install` drops the binary in `$(go env GOPATH)/bin`; make sure that is on your `PATH`.
