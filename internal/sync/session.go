@@ -149,10 +149,21 @@ func itoa(n uint64) string {
 	return string(b[i:])
 }
 
-// pageSize is how many records move per HTTP request. 1000 is the maximum
-// the server accepts, and it cuts a 3000-record first sync from 31 round-trips
-// to 4.
+// pageSize is how many records a store query fetches at once. 1000 is the
+// maximum the server accepts for a download page, and it keeps a 3000-record
+// first sync to a few queries. It is NOT the upload page size: uploads are
+// bounded by bytes (see uploadMaxBytes), since a single record can be ~1 MiB.
 const pageSize = 1000
+
+// uploadMaxBytes caps the body of a single upload request. Paging by record
+// count alone is unsafe: records vary from a few hundred bytes to ~1 MiB
+// (incompressible payloads sit at the MaxBatchBytes ceiling), so a 1000-record
+// page can run to hundreds of megabytes — past Cloudflare's ~100 MiB request
+// limit, which is the 413 a large first sync dies with. 8 MiB keeps every
+// request comfortably inside that limit (and any sane reverse proxy's) after
+// base64 inflation, while staying big enough that normal syncs are still a
+// handful of requests.
+const uploadMaxBytes = 8 << 20
 
 // transferConcurrency is how many pages may be in flight at once. Transfers
 // are the slow part of a sync when the server is remote, and pages are
@@ -215,26 +226,64 @@ func (s *Session) upload(ctx context.Context, host, tag string, remote record.St
 	if r, ok := remote.MaxIdx(host, tag); ok {
 		start = r + 1
 	}
-	var next atomic.Uint64
-	next.Store(start)
+
+	var (
+		mu   sync.Mutex
+		next = start
+	)
+
+	// claim atomically fetches the next byte-bounded batch of records,
+	// advancing the cursor only as far as the records it hands back. The
+	// mutex makes the claim atomic, so concurrent workers fetch disjoint
+	// ranges instead of racing each other's Load/Store on a shared cursor.
+	claim := func() ([]*record.Record, bool, error) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		var (
+			group []*record.Record
+			bytes int
+		)
+		for {
+			recs, err := s.Store.List(ctx, host, tag, next, pageSize)
+			if err != nil {
+				return nil, false, err
+			}
+			if len(recs) == 0 {
+				return group, false, nil
+			}
+			for _, r := range recs {
+				// Base64 inflates []byte by ~4/3 on the wire.
+				size := (len(r.Data) + len(r.Nonce)) * 4 / 3
+				if len(group) > 0 && bytes+size > uploadMaxBytes {
+					// Rewind to the first unclaimed record; the next claim
+					// starts here so nothing is dropped.
+					next = r.Idx
+
+					return group, true, nil
+				}
+				group = append(group, r)
+				bytes += size
+			}
+			next = recs[len(recs)-1].Idx + 1
+			if bytes >= uploadMaxBytes {
+				return group, true, nil
+			}
+		}
+	}
 
 	return runPages(ctx, func(ctx context.Context) (uint64, bool, error) {
-		recs, err := s.Store.List(ctx, host, tag, next.Load(), pageSize)
-		if err != nil {
+		group, more, err := claim()
+		if err != nil || len(group) == 0 {
 			return 0, false, err
 		}
-		if len(recs) == 0 {
-			return 0, false, nil
-		}
-		last := recs[len(recs)-1].Idx
-		next.Store(last + 1)
 		// Pages are disjoint ranges and the server upserts on
 		// (owner, host, tag, idx), so out-of-order arrival is harmless.
-		if err := s.Client.Upload(ctx, recs); err != nil {
+		if err := s.Client.Upload(ctx, group); err != nil {
 			return 0, false, err
 		}
 
-		return last, true, nil
+		return group[len(group)-1].Idx, more, nil
 	})
 }
 

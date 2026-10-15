@@ -95,6 +95,17 @@ func (c *Client) Me(ctx context.Context) (string, error) {
 	return out["username"], err
 }
 
+// ChangePassword verifies the current password and sets a new one, revoking
+// every other token for the account.
+func (c *Client) ChangePassword(ctx context.Context, oldPassword, newPassword string) error {
+	return c.do(ctx, "POST", "/api/v0/password", map[string]string{"old_password": oldPassword, "new_password": newPassword}, nil)
+}
+
+// Logout revokes the current token on the server.
+func (c *Client) Logout(ctx context.Context) error {
+	return c.do(ctx, "POST", "/api/v0/logout", nil, nil)
+}
+
 // Wipe deletes all remote records for the user.
 func (c *Client) Wipe(ctx context.Context) error {
 	return c.do(ctx, "DELETE", "/api/v0/store", nil, nil)

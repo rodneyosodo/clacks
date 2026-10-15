@@ -23,7 +23,7 @@ func newTransferServer(t *testing.T) (string, string) {
 	ts := httptest.NewServer(server.New(st).Handler())
 	t.Cleanup(ts.Close)
 
-	tok, err := client.New(ts.URL, "", false).Register(t.Context(), "u", "p")
+	tok, err := client.New(ts.URL, "", false).Register(t.Context(), "u", "password1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,6 +75,76 @@ func seedRecords(t *testing.T, s *Session, n int) {
 		}
 		if err := s.Store.Append(ctx, rec); err != nil {
 			t.Fatal(err)
+		}
+	}
+}
+
+// seedBigRecords writes n records whose opaque Data blobs are dataSize bytes
+// each. The blobs bypass the zstd path so they stay large (incompressible),
+// which is what forces upload byte-paging instead of record-count paging.
+func seedBigRecords(t *testing.T, s *Session, n, dataSize int) {
+	t.Helper()
+	ctx := t.Context()
+	buf := make([]byte, dataSize)
+	for i := range n {
+		for j := range buf {
+			buf[j] = byte((i*31 + j) % 256)
+		}
+		idx, err := s.Store.NextIdx(ctx, s.HostID, "opencode")
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := &record.Record{
+			ID: record.NewRecordID(), Host: s.HostID, Tag: "opencode", Idx: idx,
+			Timestamp: record.NowMicros(), Nonce: []byte{byte(i)}, Data: append([]byte(nil), buf...),
+		}
+		if err := s.Store.Append(ctx, rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestUploadBytePaged pushes records whose combined size far exceeds
+// uploadMaxBytes, so the byte-bounded claim path (including the cursor rewind
+// when a record would straddle a page) is exercised. Any record dropped or
+// duplicated by that logic shows up as a gap or a short count here.
+func TestUploadBytePaged(t *testing.T) {
+	const (
+		n        = 12
+		dataSize = 2 << 20 // 2 MiB each => ~24 MiB total, 3+ requests at 8 MiB
+	)
+	url, tok := newTransferServer(t)
+	a := newSession(t, url, tok, "host-a")
+	seedBigRecords(t, a, n, dataSize)
+
+	ctx := t.Context()
+	remote, err := a.Client.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.upload(ctx, a.HostID, "opencode", remote); err != nil {
+		t.Fatal("upload:", err)
+	}
+
+	remote, err = a.Client.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := remote.MaxIdx(a.HostID, "opencode"); got != n-1 {
+		t.Fatalf("remote max idx = %d, want %d", got, n-1)
+	}
+	for start := 0; start < n; start += pageSize {
+		got, err := a.Client.Download(ctx, a.HostID, "opencode", uint64(start), pageSize)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, r := range got {
+			if want := uint64(start + i); r.Idx != want {
+				t.Fatalf("gap at %d: got idx %d, want %d", i, r.Idx, want)
+			}
+			if len(r.Data) != dataSize {
+				t.Fatalf("idx %d: data len %d, want %d", r.Idx, len(r.Data), dataSize)
+			}
 		}
 	}
 }

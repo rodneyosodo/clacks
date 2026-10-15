@@ -81,6 +81,8 @@ Anywhere reachable, on the default port:
 clacks server start --listen :8080 --db ~/.local/share/clacks/server.db
 ```
 
+The server logs JSON to stdout (one object per line), ready for a log pipeline. Every request emits an access line — `method`, `path`, `status`, `duration`, `bytes`, `remote` and, when authenticated, `user` — plus events for auth rejections, register/login, uploads and wipes. Raise the level with `--log-level debug` and lower the noise with `--log-level warn`; liveness probes on `/healthz` are never logged.
+
 Put it behind TLS (a tunnel works) and set `sync_address` in the config to that URL. If you use a self-signed cert or a minimal container.
 
 ### 2. Connect machine A
@@ -128,13 +130,15 @@ Or run it on a timer — see [`contrib/clacks.service`](contrib/clacks.service) 
 | ------------------------------------------- | ------------------------------------------- |
 | `clacks register --username U --password P` | Create an account on the server             |
 | `clacks login --username U --password P`    | Get a token for an existing account         |
-| `clacks logout`                             | Forget the stored token                     |
+| `clacks logout`                             | Revoke the token and clear it               |
+| `clacks passwd`                             | Change your password (logs out other sessions) |
 | `clacks key`                                | Print the sync mnemonic for another machine |
 | `clacks sync [--since DATE] [--force]`      | Push local changes, pull remote ones        |
 | `clacks status`                             | Show what is where, per machine             |
 | `clacks opencode sessions`                  | List sessions and whether each has synced   |
 | `clacks daemon`                             | Sync on a timer                             |
 | `clacks server start`                       | Run the sync server                         |
+| `clacks server reset-password --username U` | Reset a forgotten password (revokes all tokens) |
 | `clacks version`                            | Show the build                              |
 
 Global flags: `--log-level debug\|info\|warn\|error`, `--insecure` (skip TLS verification).

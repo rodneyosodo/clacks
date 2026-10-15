@@ -19,13 +19,13 @@ func TestInsecureSkipVerify(t *testing.T) {
 	ts := httptest.NewTLSServer(server.New(st).Handler())
 	defer ts.Close()
 
-	if _, err := New(ts.URL, "", false).Register(t.Context(), "u", "p"); err == nil {
+	if _, err := New(ts.URL, "", false).Register(t.Context(), "u", "password1"); err == nil {
 		t.Fatal("secure client against untrusted cert should fail")
 	} else if !strings.Contains(err.Error(), "certificate") {
 		t.Fatalf("want x509 error, got: %v", err)
 	}
 
-	tok, err := New(ts.URL, "", true).Register(t.Context(), "u2", "p")
+	tok, err := New(ts.URL, "", true).Register(t.Context(), "u2", "password1")
 	if err != nil {
 		t.Fatalf("insecure client failed: %v", err)
 	}

@@ -30,6 +30,8 @@ func New(store *Store) *Server {
 	s.mux.HandleFunc("POST /api/v0/record", s.withAuth(s.handleUpload))
 	s.mux.HandleFunc("GET /api/v0/record/next", s.withAuth(s.handleNext))
 	s.mux.HandleFunc("GET /api/v0/me", s.withAuth(s.handleMe))
+	s.mux.HandleFunc("POST /api/v0/password", s.withAuth(s.handleChangePassword))
+	s.mux.HandleFunc("POST /api/v0/logout", s.withAuth(s.handleLogout))
 	s.mux.HandleFunc("DELETE /api/v0/store", s.withAuth(s.handleWipe))
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("ok"))
@@ -38,13 +40,20 @@ func New(store *Store) *Server {
 	return s
 }
 
-// Handler returns the HTTP handler.
-func (s *Server) Handler() http.Handler { return s.mux }
+// Handler returns the HTTP handler, wrapped in request logging.
+func (s *Server) Handler() http.Handler { return requestLog(s.mux) }
 
 type credentials struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
+
+// minPasswordLen is the minimum accepted password length for register, change
+// and reset. It is a policy floor, not a correctness bound.
+const minPasswordLen = 8
+
+// errBadPassword is returned when a password fails the policy.
+const errBadPassword = "password too short (min 8 characters)"
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -75,6 +84,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	if len(c.Password) < minPasswordLen {
+		writeErr(w, 400, errBadPassword)
+
+		return
+	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(c.Password), bcrypt.DefaultCost)
 	if err != nil {
 		writeErr(w, 500, "hash failed")
@@ -83,6 +97,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = s.store.db.ExecContext(r.Context(), `INSERT INTO users(username, password_hash) VALUES(?,?)`, c.Username, hash)
 	if err != nil {
+		slog.Warn("register failed", slog.String("reason", "username taken"), slog.String("user", c.Username))
 		writeErr(w, 409, "username taken")
 
 		return
@@ -93,6 +108,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	slog.Info("register", slog.String("user", c.Username))
 	writeJSON(w, 200, map[string]string{"token": tok})
 }
 
@@ -106,11 +122,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var hash []byte
 	err := s.store.db.QueryRowContext(r.Context(), `SELECT password_hash FROM users WHERE username=?`, c.Username).Scan(&hash)
 	if err != nil {
+		slog.Warn("login failed", slog.String("reason", "unknown user"), slog.String("user", c.Username))
 		writeErr(w, 401, "invalid credentials")
 
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword(hash, []byte(c.Password)); err != nil {
+		slog.Warn("login failed", slog.String("reason", "bad password"), slog.String("user", c.Username))
 		writeErr(w, 401, "invalid credentials")
 
 		return
@@ -121,11 +139,19 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	slog.Info("login", slog.String("user", c.Username))
 	writeJSON(w, 200, map[string]string{"token": tok})
 }
 
 func (s *Server) username(r *http.Request) (string, bool) {
 	v, ok := r.Context().Value(ctxUserKey{}).(string)
+
+	return v, ok
+}
+
+// token returns the bearer token that authenticated the request.
+func (s *Server) token(r *http.Request) (string, bool) {
+	v, ok := r.Context().Value(ctxTokenKey{}).(string)
 
 	return v, ok
 }
@@ -202,6 +228,9 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	if len(recs) > 0 {
+		slog.Info("upload", slog.String("user", user), slog.String("host", recs[0].Host), slog.String("tag", recs[0].Tag), slog.Int("count", len(recs)))
+	}
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
@@ -267,6 +296,74 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"username": user})
 }
 
+// handleChangePassword resets an authenticated user's password after verifying
+// the current one. Every other token for the user is revoked, so a leaked
+// credential can be cut off in one step; the token making the request stays
+// valid.
+func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	user, _ := s.username(r)
+	tok, _ := s.token(r)
+	var c struct {
+		OldPassword string `json:"old_password"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&c); err != nil || c.OldPassword == "" || c.NewPassword == "" {
+		writeErr(w, 400, "old_password and new_password required")
+
+		return
+	}
+	if len(c.NewPassword) < minPasswordLen {
+		writeErr(w, 400, errBadPassword)
+
+		return
+	}
+	var hash []byte
+	if err := s.store.db.QueryRowContext(r.Context(), `SELECT password_hash FROM users WHERE username=?`, user).Scan(&hash); err != nil {
+		writeErr(w, 500, "db error")
+
+		return
+	}
+	if bcrypt.CompareHashAndPassword(hash, []byte(c.OldPassword)) != nil {
+		slog.Warn("password change failed", slog.String("reason", "bad current password"), slog.String("user", user))
+		writeErr(w, 401, "invalid current password")
+
+		return
+	}
+	newHash, err := bcrypt.GenerateFromPassword([]byte(c.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		writeErr(w, 500, "hash failed")
+
+		return
+	}
+	if _, err := s.store.db.ExecContext(r.Context(), `UPDATE users SET password_hash=? WHERE username=?`, newHash, user); err != nil {
+		writeErr(w, 500, "db error")
+
+		return
+	}
+	if _, err := s.store.db.ExecContext(r.Context(), `DELETE FROM tokens WHERE username=? AND token<>?`, user, tok); err != nil {
+		writeErr(w, 500, "db error")
+
+		return
+	}
+	slog.Info("password changed", slog.String("user", user))
+	writeJSON(w, 200, map[string]string{"status": "ok"})
+}
+
+// handleLogout revokes the token that authenticated the request, so a logout
+// actually invalidates the credential on the server rather than only on the
+// client that happened to clear it.
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	user, _ := s.username(r)
+	tok, _ := s.token(r)
+	if _, err := s.store.db.ExecContext(r.Context(), `DELETE FROM tokens WHERE token=? AND username=?`, tok, user); err != nil {
+		writeErr(w, 500, "db error")
+
+		return
+	}
+	slog.Info("logout", slog.String("user", user))
+	writeJSON(w, 200, map[string]string{"status": "ok"})
+}
+
 func (s *Server) handleWipe(w http.ResponseWriter, r *http.Request) {
 	user, _ := s.username(r)
 	if _, err := s.store.db.ExecContext(r.Context(), `DELETE FROM records WHERE owner=?`, user); err != nil {
@@ -274,6 +371,7 @@ func (s *Server) handleWipe(w http.ResponseWriter, r *http.Request) {
 
 		return
 	}
+	slog.Warn("wipe", slog.String("user", user))
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
