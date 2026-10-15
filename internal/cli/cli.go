@@ -388,7 +388,7 @@ func opencodeCmd() *cobra.Command {
 }
 
 func daemonCmd() *cobra.Command {
-	return &cobra.Command{Use: "daemon", Short: "Sync every sync_frequency",
+	cmd := &cobra.Command{Use: "daemon", Short: "Sync every sync_frequency",
 		Run: func(cmd *cobra.Command, args []string) {
 			cfg := mustConfig()
 			if cfg.Token == "" {
@@ -414,6 +414,9 @@ func daemonCmd() *cobra.Command {
 				time.Sleep(interval)
 			}
 		}}
+	cmd.AddCommand(daemonInstallCmd(), daemonUninstallCmd())
+
+	return cmd
 }
 
 func serverCmd() *cobra.Command {

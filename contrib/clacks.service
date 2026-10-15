@@ -1,3 +1,6 @@
+# Reference unit for a `go install` layout (binary at ~/go/bin/clacks).
+# Prefer `clacks daemon install`, which writes this unit with the running
+# binary's absolute path, and `clacks daemon install --enable` to start it.
 [Unit]
 Description=clacks sync daemon (encrypted sync for AI coding sessions)
 After=network-online.target
